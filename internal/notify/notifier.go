@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/envpilot/webhook/internal/domain"
+	"github.com/envpilot/contracts/domain"
 	"github.com/envpilot/webhook/internal/secrets"
 )
 

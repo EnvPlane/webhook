@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/envpilot/webhook/internal/domain"
+	"github.com/envpilot/contracts/domain"
 )
 
 func TestBuildEnvironmentCommentIncludesURLAndStatus(t *testing.T) {

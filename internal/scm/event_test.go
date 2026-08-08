@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/envpilot/webhook/internal/domain"
+	"github.com/envpilot/contracts/domain"
 )
 
 func TestParseGitHubPullRequestNormalizesEvent(t *testing.T) {

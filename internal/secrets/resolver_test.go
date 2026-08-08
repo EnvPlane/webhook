@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/envpilot/webhook/internal/domain"
+	"github.com/envpilot/contracts/domain"
 )
 
 func TestResolverResolvesEnvSecret(t *testing.T) {

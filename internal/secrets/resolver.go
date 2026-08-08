@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/envpilot/webhook/internal/domain"
+	"github.com/envpilot/contracts/domain"
 )
 
 type Resolver struct {
