@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"envpilot/internal/domain"
-	"envpilot/internal/secrets"
+	"github.com/envpilot/webhook/internal/domain"
+	"github.com/envpilot/webhook/internal/secrets"
 )
 
 type SettingsProvider interface {

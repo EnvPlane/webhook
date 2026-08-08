@@ -1,4 +1,4 @@
-module envpilot
+module github.com/envpilot/webhook
 
 go 1.25.0
 
