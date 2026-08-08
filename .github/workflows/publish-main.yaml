@@ -1,0 +1,87 @@
+name: Publish webhook image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "apps/**"
+      - "internal/**"
+      - "Dockerfile"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/publish-main.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: source_read_auth
+        name: Select source authentication
+        env:
+          CLIENT_ID: ${{ secrets.ENVPILOT_AUTOMATION_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.ENVPILOT_AUTOMATION_APP_PRIVATE_KEY }}
+          FALLBACK_PAT: ${{ secrets.ENVPILOT_AUTOMATION_PAT }}
+        run: |
+          if [[ -n "$CLIENT_ID" && -n "$APP_PRIVATE_KEY" ]]; then
+            echo "method=app" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$FALLBACK_PAT" ]]; then
+            echo "method=pat" >> "$GITHUB_OUTPUT"
+          else
+            echo "No source-read credentials configured." >&2
+            exit 1
+          fi
+      - id: source_read_app
+        if: steps.source_read_auth.outputs.method == 'app'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.ENVPILOT_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ENVPILOT_AUTOMATION_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: contracts
+          permission-contents: read
+      - name: Configure private Go modules
+        env:
+          SOURCE_TOKEN: ${{ steps.source_read_app.outputs.token || secrets.ENVPILOT_AUTOMATION_PAT }}
+        run: |
+          echo 'GOPRIVATE=github.com/envpilot/*' >> "$GITHUB_ENV"
+          git config --global url."https://x-access-token:${SOURCE_TOKEN}@github.com/".insteadOf "https://github.com/"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./...
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN || github.token }}
+      - id: metadata
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/webhook
+          tags: |
+            type=raw,value=sha-${{ github.sha }}
+            type=semver,pattern={{version}}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=webhook
+          cache-to: type=gha,mode=max,scope=webhook
+          secrets: |
+            github_token=${{ steps.source_read_app.outputs.token || secrets.ENVPILOT_AUTOMATION_PAT }}
+          provenance: mode=max
+          sbom: true

@@ -1,23 +1,22 @@
 # EnvPilot Webhook
 
-SCM webhook and PR/MR event integration boundary.
+Standalone stateless GitHub and GitLab webhook receiver.
 
-## Scope
+```bash
+ENVPILOT_CONTROL_PLANE_URL=http://localhost:8080 \
+ENVPILOT_CONTROL_PLANE_TOKEN=write-token \
+ENVPILOT_GITHUB_WEBHOOK_SECRET=development-secret \
+go run ./apps/webhook
+```
 
-- GitHub and GitLab webhook event parsing.
-- Pull request and merge request lifecycle events.
-- Comment command parsing and posting.
-- Translation from SCM events into EnvPilot environment actions.
+Endpoints:
 
-## Source Origin
+- `POST /api/v1/webhooks/github` validates `X-Hub-Signature-256`.
+- `POST /api/v1/webhooks/gitlab` validates `X-Gitlab-Token`.
+- `GET /health` and `GET /livez` expose health checks.
 
-This repository was split from:
-
-- `apps/webhook`
-- `internal/scm`
-- `internal/scm/comment`
-- shared notification/domain packages
-
-## Runtime Note
-
-Webhook HTTP handlers currently live in the control-plane server package. A follow-up extraction should add a standalone webhook binary that calls the control-plane API or publishes jobs.
+Valid pull/merge request payloads are normalized and submitted to the
+authenticated control-plane `POST /api/v1/jobs` endpoint. Provider secrets and
+the control-plane write token must be supplied through a Kubernetes Secret in
+production. The standalone Helm chart lives at
+`deploy/helm/envpilot-webhook` in the deploy repository.

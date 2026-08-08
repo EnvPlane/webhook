@@ -1,9 +1,10 @@
-# EnvPilot Webhook App
+# envpilot-webhook
 
-Boundary for the future standalone SCM webhook receiver.
+Production entrypoint for the standalone webhook receiver:
 
-Current implementation lives in the API server package:
+```bash
+go build ./apps/webhook
+```
 
-- GitHub: `POST /api/v1/webhooks/github`
-- GitLab: `POST /api/v1/webhooks/gitlab`
-
+Configuration is environment-only; see the repository README for required
+control-plane and provider credentials.
