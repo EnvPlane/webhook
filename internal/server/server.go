@@ -170,7 +170,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRe
 	req.Header.Set("Authorization", "Bearer "+s.cfg.ControlPlaneToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-EnvPilot-Webhook-Provider", string(event.Provider))
+	req.Header.Set("X-EnvPlane-Webhook-Provider", string(event.Provider))
 	response, err := s.client.Do(req)
 	if err != nil {
 		s.logger.Error("control-plane job submission failed", "provider", event.Provider, "event_id", event.EventID, "error", err)
