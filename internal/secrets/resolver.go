@@ -193,7 +193,7 @@ func (r *Resolver) resolveKubernetes(ctx context.Context, secret domain.SecretRe
 	if err != nil {
 		return "", err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
 		return "", fmt.Errorf("kubernetes secret read failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
@@ -240,7 +240,7 @@ func (r *Resolver) resolveVault(ctx context.Context, secret domain.SecretReferen
 	if err != nil {
 		return "", err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
 		return "", fmt.Errorf("vault secret read failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))

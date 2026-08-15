@@ -23,17 +23,21 @@ func TestGitHubWebhookValidatesSignatureAndSubmitsNormalizedJob(t *testing.T) {
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		submissions.Add(1)
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/jobs" {
-			t.Fatalf("control-plane request = %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected control-plane request", http.StatusBadRequest)
+			return
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer control-plane-token" {
-			t.Fatalf("authorization = %q", got)
+			http.Error(w, "unexpected authorization", http.StatusUnauthorized)
+			return
 		}
 		var event scm.PullRequestEvent
 		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-			t.Fatalf("decode normalized event: %v", err)
+			http.Error(w, "decode normalized event: "+err.Error(), http.StatusBadRequest)
+			return
 		}
 		if event.Provider != scm.ProviderGitHub || event.Action != scm.ActionOpen || event.Repo != "owner/repo" || event.ChangeID != "42" || event.EventID != "delivery-42" {
-			t.Fatalf("normalized event = %#v", event)
+			http.Error(w, "unexpected normalized event", http.StatusBadRequest)
+			return
 		}
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = io.WriteString(w, `{"id":"job-42","status":"queued"}`)
@@ -73,11 +77,40 @@ func TestGitHubWebhookRejectsInvalidSignatureWithoutSubmission(t *testing.T) {
 	}
 }
 
+func TestGitHubIssueCommentWebhookSubmitsCommand(t *testing.T) {
+	var command scm.PullRequestCommand
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/jobs/commands" {
+			http.Error(w, "unexpected control-plane path", http.StatusBadRequest)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&command); err != nil {
+			http.Error(w, "decode command: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"id":"job-command-1"}`)
+	}))
+	defer controlPlane.Close()
+	application := newTestServer(t, controlPlane.URL)
+	body := []byte(`{"action":"created","issue":{"number":42,"html_url":"https://github.com/owner/repo/issues/42","pull_request":{"url":"https://api.github.com/repos/owner/repo/pulls/42"}},"comment":{"body":"/envpilot destroy","user":{"login":"octocat"}},"repository":{"full_name":"owner/repo"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", bytes.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "issue_comment")
+	req.Header.Set("X-GitHub-Delivery", "comment-42")
+	req.Header.Set("X-Hub-Signature-256", githubSignature("github-secret", body))
+	rec := httptest.NewRecorder()
+	application.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || command.Command != scm.CommandDestroy || command.ChangeID != "42" || command.EventID != "comment-42" {
+		t.Fatalf("response=%d command=%#v body=%s", rec.Code, command, rec.Body.String())
+	}
+}
+
 func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	var received scm.PullRequestEvent
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
-			t.Fatal(err)
+			http.Error(w, "decode event: "+err.Error(), http.StatusBadRequest)
+			return
 		}
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = io.WriteString(w, `{"id":"job-7"}`)

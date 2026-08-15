@@ -49,3 +49,17 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go test ./...
+      - name: Enforce public notification boundary
+        run: test -f notify/notifier.go
+      - name: Enforce public SCM parser boundary
+        run: test -f scm/scm.go && test -f docs/module-ownership.md
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64
+      - run: go test -race ./...
+      - run: go test -coverprofile=cover.out ./...
+      - name: Enforce coverage floor
+        run: |
+          total="$(go tool cover -func=cover.out | awk '/^total:/ {gsub(/%/, "", $NF); print $NF}')"
+          awk -v total="$total" 'BEGIN { if (total < 20) { print "coverage below 20%: " total "%"; exit 1 } }'

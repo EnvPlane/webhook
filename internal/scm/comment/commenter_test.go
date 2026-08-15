@@ -47,7 +47,8 @@ func TestGitHubCommentUsesIssueCommentsEndpoint(t *testing.T) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
 		if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
-			t.Fatalf("decode payload: %v", err)
+			http.Error(w, "decode payload: "+err.Error(), http.StatusBadRequest)
+			return
 		}
 		w.WriteHeader(http.StatusCreated)
 	}))
@@ -121,7 +122,8 @@ func TestGitLabCommentUsesMergeRequestNotesEndpoint(t *testing.T) {
 		gotRequestURI = r.RequestURI
 		gotToken = r.Header.Get("PRIVATE-TOKEN")
 		if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
-			t.Fatalf("decode payload: %v", err)
+			http.Error(w, "decode payload: "+err.Error(), http.StatusBadRequest)
+			return
 		}
 		w.WriteHeader(http.StatusCreated)
 	}))

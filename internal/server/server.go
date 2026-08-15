@@ -107,7 +107,19 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, errors.New("invalid webhook signature"))
 		return
 	}
-	if r.Header.Get("X-GitHub-Event") != "pull_request" {
+	eventType := strings.TrimSpace(r.Header.Get("X-GitHub-Event"))
+	if eventType == "issue_comment" {
+		command, err := scm.ParseGitHubPRCommand(body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		command.EventID = strings.TrimSpace(r.Header.Get("X-GitHub-Delivery"))
+		s.submitCommand(w, r, command)
+		return
+	}
+	if eventType != "pull_request" {
+		s.logger.Info("unsupported GitHub webhook event", "event", eventType)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
 		return
 	}
@@ -129,7 +141,27 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, errors.New("invalid webhook token"))
 		return
 	}
-	if eventType := strings.TrimSpace(r.Header.Get("X-Gitlab-Event")); eventType != "" && eventType != "Merge Request Hook" {
+	eventType := strings.TrimSpace(r.Header.Get("X-Gitlab-Event"))
+	if eventType == "Note Hook" {
+		body, err := readBody(w, r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		command, err := scm.ParseGitLabPRCommand(body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		command.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Event-UUID"))
+		if command.EventID == "" {
+			command.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Delivery"))
+		}
+		s.submitCommand(w, r, command)
+		return
+	}
+	if eventType != "" && eventType != "Merge Request Hook" {
+		s.logger.Info("unsupported GitLab webhook event", "event", eventType)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
 		return
 	}
@@ -195,6 +227,42 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRe
 	}
 	s.logger.Info("webhook job submitted", "provider", event.Provider, "event_id", event.EventID, "repository", event.Repo, "change_id", event.ChangeID)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "accepted", "job": job})
+}
+
+func (s *Server) submitCommand(w http.ResponseWriter, r *http.Request, command scm.PullRequestCommand) {
+	payload, err := json.Marshal(command)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.ControlPlaneURL+"/api/v1/jobs/commands", bytes.NewReader(payload))
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+s.cfg.ControlPlaneToken)
+	req.Header.Set("Content-Type", "application/json")
+	response, err := s.client.Do(req)
+	if err != nil {
+		s.logger.Error("control-plane command submission failed", "provider", command.Provider, "event_id", command.EventID, "error", err)
+		writeError(w, http.StatusBadGateway, errors.New("control-plane is unavailable"))
+		return
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		writeError(w, http.StatusBadGateway, fmt.Errorf("control-plane rejected command with HTTP %d", response.StatusCode))
+		return
+	}
+	var result any
+	if len(bytes.TrimSpace(responseBody)) > 0 && json.Unmarshal(responseBody, &result) != nil {
+		writeError(w, http.StatusBadGateway, errors.New("invalid control-plane response"))
+		return
+	}
+	s.logger.Info("webhook command submitted", "provider", command.Provider, "event_id", command.EventID, "command", command.Command)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "accepted", "result": result})
 }
 
 func validGitHubSignature(secret, signature string, body []byte) bool {

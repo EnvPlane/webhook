@@ -24,7 +24,8 @@ func TestSlackNotifierResolvesWebhookFromSecretRef(t *testing.T) {
 	var payload map[string]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("decode payload: %v", err)
+			http.Error(w, "decode payload: "+err.Error(), http.StatusBadRequest)
+			return
 		}
 		w.WriteHeader(http.StatusOK)
 	}))

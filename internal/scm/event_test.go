@@ -215,6 +215,54 @@ func TestDeduplicationKeyUsesEventIDAndFallbackTuple(t *testing.T) {
 	}
 }
 
+func TestSCMParsersRejectMalformedJSON(t *testing.T) {
+	parsers := []struct {
+		name  string
+		parse func([]byte) (PullRequestEvent, error)
+	}{
+		{name: "github", parse: ParseGitHubPullRequest},
+		{name: "gitlab", parse: ParseGitLabMergeRequest},
+	}
+	for _, tt := range parsers {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := tt.parse([]byte("{")); err == nil {
+				t.Fatal("expected malformed JSON error")
+			}
+		})
+	}
+}
+
+func TestSCMNormalizationHelpers(t *testing.T) {
+	for _, tt := range []struct{ name, input, want string }{
+		{"branch", " Feature/ABC_42 ", "feature-abc-42"},
+		{"unicode", "ümlaut", "mlaut"},
+		{"empty", "---", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeIdentifier(tt.input); got != tt.want {
+				t.Fatalf("normalizeIdentifier = %q, want %q", got, tt.want)
+			}
+			if got := branchToEnvironmentID(tt.input); got != tt.want {
+				t.Fatalf("branchToEnvironmentID = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	for _, tt := range []struct {
+		input string
+		want  time.Duration
+		ok    bool
+	}{
+		{"7d", 7 * 24 * time.Hour, true}, {"2h", 2 * time.Hour, true}, {"0d", 0, false}, {"bad", 0, false},
+	} {
+		t.Run("duration-"+tt.input, func(t *testing.T) {
+			got, ok := parseCommandDuration(tt.input)
+			if got != tt.want || ok != tt.ok {
+				t.Fatalf("parseCommandDuration(%q) = %s,%v", tt.input, got, ok)
+			}
+		})
+	}
+}
+
 func githubPayload(action string, branch string, sha string) string {
 	return githubPayloadWithNumber(action, "2101", branch, sha)
 }

@@ -11,144 +11,23 @@ import (
 	"github.com/envpilot/contracts/domain"
 )
 
-type Provider string
+type Provider = domain.Provider
+type EventAction = domain.EventAction
+type PRCommand = domain.PRCommand
+type PullRequestEvent = domain.PullRequestEvent
+type PullRequestCommand = domain.PullRequestCommand
 
 const (
-	ProviderGitHub Provider = "github"
-	ProviderGitLab Provider = "gitlab"
+	ProviderGitHub  = domain.ProviderGitHub
+	ProviderGitLab  = domain.ProviderGitLab
+	ActionOpen      = domain.ActionOpen
+	ActionUpdate    = domain.ActionUpdate
+	ActionClose     = domain.ActionClose
+	ActionIgnore    = domain.ActionIgnore
+	CommandRecreate = domain.CommandRecreate
+	CommandDestroy  = domain.CommandDestroy
+	CommandPin      = domain.CommandPin
 )
-
-type EventAction string
-
-const (
-	ActionOpen   EventAction = "open"
-	ActionUpdate EventAction = "update"
-	ActionClose  EventAction = "close"
-	ActionIgnore EventAction = "ignore"
-)
-
-type PRCommand string
-
-const (
-	CommandRecreate PRCommand = "recreate"
-	CommandDestroy  PRCommand = "destroy"
-	CommandPin      PRCommand = "pin"
-)
-
-type PullRequestEvent struct {
-	Provider       Provider    `json:"provider"`
-	Action         EventAction `json:"action"`
-	Repo           string      `json:"repo"`
-	Branch         string      `json:"branch"`
-	ChangeID       string      `json:"changeId"`
-	CommitSHA      string      `json:"commitSha"`
-	Author         string      `json:"author"`
-	URL            string      `json:"url"`
-	EventID        string      `json:"eventId"`
-	InstallationID string      `json:"installationId"`
-	Labels         []string    `json:"labels"`
-	Draft          bool        `json:"draft"`
-}
-
-type PullRequestCommand struct {
-	Provider       Provider      `json:"provider"`
-	Command        PRCommand     `json:"command"`
-	Repo           string        `json:"repo"`
-	ChangeID       string        `json:"changeId"`
-	Author         string        `json:"author"`
-	URL            string        `json:"url"`
-	EventID        string        `json:"eventId"`
-	InstallationID string        `json:"installationId"`
-	PinDuration    time.Duration `json:"pinDuration,omitempty"`
-	PinRaw         string        `json:"pinRaw,omitempty"`
-}
-
-func (e PullRequestEvent) EnvironmentID() string {
-	switch e.Provider {
-	case ProviderGitHub:
-		return "pr-" + normalizeIdentifier(e.ChangeID)
-	case ProviderGitLab:
-		return "mr-" + normalizeIdentifier(e.ChangeID)
-	default:
-		if id := normalizeIdentifier(e.ChangeID); id != "" {
-			return id
-		}
-		return branchToEnvironmentID(e.Branch)
-	}
-}
-
-func (c PullRequestCommand) EnvironmentID() string {
-	return PullRequestEvent{Provider: c.Provider, ChangeID: c.ChangeID}.EnvironmentID()
-}
-
-func (c PullRequestCommand) PullRequestEvent(action EventAction) PullRequestEvent {
-	return PullRequestEvent{
-		Provider:       c.Provider,
-		Action:         action,
-		Repo:           c.Repo,
-		ChangeID:       c.ChangeID,
-		Author:         c.Author,
-		URL:            c.URL,
-		EventID:        c.EventID,
-		InstallationID: c.InstallationID,
-	}
-}
-
-func (e PullRequestEvent) DeduplicationKey() string {
-	if value := strings.TrimSpace(e.EventID); value != "" {
-		return "event:" + strings.ToLower(value)
-	}
-
-	provider := strings.ToLower(strings.TrimSpace(string(e.Provider)))
-	repo := strings.ToLower(strings.TrimSpace(e.Repo))
-	changeID := strings.TrimSpace(e.ChangeID)
-	action := strings.ToLower(strings.TrimSpace(string(e.Action)))
-	parts := []string{}
-	if provider != "" {
-		parts = append(parts, provider)
-	}
-	if repo != "" {
-		parts = append(parts, repo)
-	}
-	if action != "" {
-		parts = append(parts, action)
-	}
-	if changeID != "" {
-		parts = append(parts, changeID)
-	} else if branch := strings.TrimSpace(e.Branch); branch != "" {
-		parts = append(parts, strings.ToLower(branch))
-	} else {
-		return ""
-	}
-	if len(parts) < 3 {
-		return ""
-	}
-	return strings.Join(parts, "|")
-}
-
-func (e PullRequestEvent) CreateEnvironmentRequest(product string, project string) domain.CreateEnvironmentRequest {
-	if product == "" {
-		product = "generic"
-	}
-	if project == "" {
-		project = projectNameFromRepo(e.Repo)
-	}
-	return domain.CreateEnvironmentRequest{
-		ID:      e.EnvironmentID(),
-		Project: project,
-		Product: product,
-		Mode:    domain.ModeFull,
-		Source: domain.SCMSource{
-			Provider:      string(e.Provider),
-			Repository:    e.Repo,
-			PullRequestID: e.ChangeID,
-			Branch:        e.Branch,
-			Commit:        e.CommitSHA,
-			Author:        e.Author,
-			URL:           e.URL,
-		},
-	}
-}
 
 func ParseGitHubPRCommand(body []byte) (PullRequestCommand, error) {
 	var event githubIssueCommentEvent
@@ -366,11 +245,7 @@ func projectNameFromRepo(repo string) string {
 }
 
 func normalizeIdentifier(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	replacer := strings.NewReplacer("/", "-", "_", "-", " ", "-")
-	value = replacer.Replace(value)
-	value = strings.Trim(value, "-")
-	return value
+	return domain.NormalizeEnvironmentID(value)
 }
 
 type gitLabMergeRequestEvent struct {
