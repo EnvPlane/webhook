@@ -256,13 +256,21 @@ func (s *Server) submitCommand(w http.ResponseWriter, r *http.Request, command s
 		writeError(w, http.StatusBadGateway, fmt.Errorf("control-plane rejected command with HTTP %d", response.StatusCode))
 		return
 	}
-	var result any
+	var result struct {
+		ID     string `json:"id"`
+		JobID  string `json:"jobId"`
+		Status string `json:"status"`
+	}
 	if len(bytes.TrimSpace(responseBody)) > 0 && json.Unmarshal(responseBody, &result) != nil {
 		writeError(w, http.StatusBadGateway, errors.New("invalid control-plane response"))
 		return
 	}
 	s.logger.Info("webhook command submitted", "provider", command.Provider, "event_id", command.EventID, "command", command.Command)
-	writeJSON(w, http.StatusOK, map[string]any{"status": "accepted", "result": result})
+	jobID := strings.TrimSpace(result.JobID)
+	if jobID == "" {
+		jobID = strings.TrimSpace(result.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "accepted", "jobId": jobID})
 }
 
 func validGitHubSignature(secret, signature string, body []byte) bool {
