@@ -75,6 +75,16 @@ func TestGitHubWebhookRejectsInvalidSignatureWithoutSubmission(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized || submissions.Load() != 0 {
 		t.Fatalf("response=%d submissions=%d", rec.Code, submissions.Load())
 	}
+	metrics := httptest.NewRecorder()
+	application.Routes().ServeHTTP(metrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(metrics.Body.String(), `outcome="invalid_signature"`) {
+		t.Fatalf("metrics do not contain invalid signature outcome: %s", metrics.Body.String())
+	}
+	ready := httptest.NewRecorder()
+	application.Routes().ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if ready.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz before successful forward = %d", ready.Code)
+	}
 }
 
 func TestGitHubIssueCommentWebhookSubmitsCommand(t *testing.T) {
