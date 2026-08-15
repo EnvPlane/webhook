@@ -48,6 +48,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Use published contracts module
+        run: go mod edit -dropreplace=github.com/envpilot/contracts
       - run: go test ./...
       - name: Enforce public notification boundary
         run: test -f notify/notifier.go
@@ -56,7 +58,7 @@ jobs:
       - run: go vet ./...
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64
+          version: v2.1.6
       - run: go test -race ./...
       - run: go test -coverprofile=cover.out ./...
       - name: Enforce coverage floor
