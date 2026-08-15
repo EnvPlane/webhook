@@ -1,6 +1,7 @@
 package scm
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -8,6 +9,32 @@ import (
 
 	"github.com/envpilot/contracts/domain"
 )
+
+func TestWebhookLabelsRejectUnsupportedShapes(t *testing.T) {
+	for _, raw := range []string{`{"name":"bug"}`, `[1,2]`} {
+		t.Run(raw, func(t *testing.T) {
+			var labels webhookLabels
+			if err := json.Unmarshal([]byte(raw), &labels); err == nil {
+				t.Fatalf("expected unsupported label shape to fail: %s", raw)
+			}
+		})
+	}
+}
+
+func TestWebhookLabelsAcceptSupportedShapes(t *testing.T) {
+	for _, tc := range []struct{ name, raw, want string }{
+		{"strings", `["bug"]`, "bug"},
+		{"name objects", `[{"name":"bug"}]`, "bug"},
+		{"title objects", `[{"title":"bug"}]`, "bug"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var labels webhookLabels
+			if err := json.Unmarshal([]byte(tc.raw), &labels); err != nil || len(labels) != 1 || labels[0] != tc.want {
+				t.Fatalf("labels=%v err=%v", labels, err)
+			}
+		})
+	}
+}
 
 func TestParseGitHubPullRequestNormalizesEvent(t *testing.T) {
 	event, err := ParseGitHubPullRequest([]byte(githubPayload("synchronize", "feature/kan-2101", "abc123")))
