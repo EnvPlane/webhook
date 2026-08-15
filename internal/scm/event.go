@@ -380,7 +380,7 @@ func (labels *webhookLabels) UnmarshalJSON(data []byte) error {
 		Title string `json:"title"`
 	}
 	if err := json.Unmarshal(data, &objects); err != nil {
-		return nil
+		return fmt.Errorf("decode webhook labels: %w", err)
 	}
 	normalized := make([]string, 0, len(objects))
 	for _, label := range objects {

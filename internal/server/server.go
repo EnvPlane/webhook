@@ -115,6 +115,14 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		command.EventID = strings.TrimSpace(r.Header.Get("X-GitHub-Delivery"))
+		if command.Command == "" {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
+			return
+		}
+		if err := validateCommand(command); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		s.submitCommand(w, r, command)
 		return
 	}
@@ -157,6 +165,14 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		if command.EventID == "" {
 			command.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Delivery"))
 		}
+		if command.Command == "" {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
+			return
+		}
+		if err := validateCommand(command); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		s.submitCommand(w, r, command)
 		return
 	}
@@ -181,6 +197,10 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if event.Action == scm.ActionIgnore {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
+		return
+	}
+	if err := validateEvent(event); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	s.submit(w, r, event)
@@ -220,13 +240,29 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRe
 		writeError(w, http.StatusBadGateway, fmt.Errorf("control-plane rejected job with HTTP %d", response.StatusCode))
 		return
 	}
-	var job any
+	var job struct {
+		ID string `json:"id"`
+	}
 	if len(bytes.TrimSpace(responseBody)) > 0 && json.Unmarshal(responseBody, &job) != nil {
 		writeError(w, http.StatusBadGateway, errors.New("invalid control-plane response"))
 		return
 	}
 	s.logger.Info("webhook job submitted", "provider", event.Provider, "event_id", event.EventID, "repository", event.Repo, "change_id", event.ChangeID)
-	writeJSON(w, http.StatusOK, map[string]any{"status": "accepted", "job": job})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "accepted", "jobId": job.ID})
+}
+
+func validateEvent(event scm.PullRequestEvent) error {
+	if strings.TrimSpace(event.Repo) == "" || strings.TrimSpace(event.ChangeID) == "" {
+		return errors.New("webhook event repository and change id are required")
+	}
+	return nil
+}
+
+func validateCommand(command scm.PullRequestCommand) error {
+	if strings.TrimSpace(command.Repo) == "" || strings.TrimSpace(command.ChangeID) == "" {
+		return errors.New("webhook command repository and change id are required")
+	}
+	return nil
 }
 
 func (s *Server) submitCommand(w http.ResponseWriter, r *http.Request, command scm.PullRequestCommand) {
