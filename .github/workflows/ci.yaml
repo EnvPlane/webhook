@@ -37,7 +37,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Use published contracts module
-        run: go mod edit -dropreplace=github.com/envpilot/contracts
+        run: |
+          go mod edit -dropreplace=github.com/envpilot/contracts
+          go mod tidy
       - name: Download private modules before running repository code
         run: go mod download
       - name: Remove source credentials before tests
