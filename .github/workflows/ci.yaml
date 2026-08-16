@@ -47,13 +47,14 @@ jobs:
         uses: golang/govulncheck-action@v1
         with:
           go-package: ./...
+          repo-checkout: false
       - run: go test ./...
       - name: Enforce public notification boundary
         run: test -f notify/notifier.go
       - name: Enforce public SCM parser boundary
         run: test -f scm/scm.go && test -f docs/module-ownership.md
       - run: go vet ./...
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.1.6
       - run: go test -race ./...
