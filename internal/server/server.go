@@ -301,7 +301,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRe
 		writeError(w, http.StatusBadGateway, errors.New("control-plane is unavailable"))
 		return
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, errors.New("invalid control-plane response"))
@@ -362,7 +362,7 @@ func (s *Server) submitCommand(w http.ResponseWriter, r *http.Request, command s
 		writeError(w, http.StatusBadGateway, errors.New("control-plane is unavailable"))
 		return
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		writeError(w, http.StatusBadGateway, fmt.Errorf("control-plane rejected command with HTTP %d", response.StatusCode))

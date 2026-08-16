@@ -151,7 +151,7 @@ func (c *SCMCommenter) postJSON(ctx context.Context, endpoint string, authHeader
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("comment request failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(responseBody)))

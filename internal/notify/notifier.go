@@ -80,7 +80,7 @@ func (n *Notifier) notifySlack(ctx context.Context, target domain.NotificationTa
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
 		return fmt.Errorf("slack notification failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))

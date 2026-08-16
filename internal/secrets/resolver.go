@@ -358,6 +358,7 @@ func kubernetesAPIURLFromEnv() string {
 }
 
 func readTrimmed(path string) string {
+	// #nosec G304 -- caller supplies the configured secret file path.
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return ""
@@ -379,6 +380,7 @@ func HTTPClientWithCA(caPath string) (*http.Client, error) {
 	if caPath == "" {
 		return &http.Client{Timeout: 10 * time.Second}, nil
 	}
+	// #nosec G304 -- caller supplies the configured CA bundle path.
 	content, err := os.ReadFile(caPath)
 	if err != nil {
 		return nil, err

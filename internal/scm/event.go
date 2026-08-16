@@ -225,25 +225,6 @@ func branchToEnvironmentID(branch string) string {
 	return normalizeIdentifier(branch)
 }
 
-func projectNameFromRepo(repo string) string {
-	repo = strings.TrimSpace(repo)
-	if repo == "" {
-		return "default"
-	}
-	parts := strings.FieldsFunc(repo, func(r rune) bool {
-		return r == '/' || r == ':' || r == '\\'
-	})
-	if len(parts) == 0 {
-		return "default"
-	}
-	name := normalizeIdentifier(parts[len(parts)-1])
-	name = strings.TrimSuffix(name, ".git")
-	if name == "" {
-		return "default"
-	}
-	return name
-}
-
 func normalizeIdentifier(value string) string {
 	return domain.NormalizeEnvironmentID(value)
 }
