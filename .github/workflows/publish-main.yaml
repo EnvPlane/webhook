@@ -23,7 +23,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: source_read_auth
         name: Select source authentication
         env:
