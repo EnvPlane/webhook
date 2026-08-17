@@ -25,10 +25,7 @@ jobs:
       - name: Download modules before running repository code
         run: go mod download
       - name: Scan Go dependencies
-        uses: golang/govulncheck-action@v1
-        with:
-          go-package: ./...
-          repo-checkout: false
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
       - run: go test ./...
       - name: Enforce public notification boundary
         run: test -f notify/notifier.go
