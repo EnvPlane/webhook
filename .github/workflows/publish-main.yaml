@@ -58,6 +58,8 @@ jobs:
         run: |
           GO_VERSION_FILE=go.mod \
           ./scripts/ensure-go.sh
+      - name: Select module Go toolchain
+        run: echo "GOTOOLCHAIN=go$(awk '/^go[[:space:]]/ {print $2; exit}' go.mod)" >> "$GITHUB_ENV"
       - name: Use published contracts module
         run: |
           go mod edit -dropreplace=github.com/envpilot/contracts
