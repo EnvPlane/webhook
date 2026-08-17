@@ -14,10 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Ensure Go toolchain
+        run: |
+          GO_VERSION_FILE=go.mod \
+          ./scripts/ensure-go.sh
       - name: Use published contracts module
         run: |
           go mod edit -dropreplace=github.com/envpilot/contracts

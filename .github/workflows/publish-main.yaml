@@ -54,10 +54,10 @@ jobs:
         run: |
           echo 'GOPRIVATE=github.com/envpilot/*' >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${SOURCE_TOKEN}@github.com/".insteadOf "https://github.com/"
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
+      - name: Ensure Go toolchain
+        run: |
+          GO_VERSION_FILE=go.mod \
+          ./scripts/ensure-go.sh
       - name: Use published contracts module
         run: |
           go mod edit -dropreplace=github.com/envpilot/contracts
