@@ -301,6 +301,15 @@ func TestBranchNativeEnvironmentNamingUsesDisplayAndCanonicalID(t *testing.T) {
 	}
 }
 
+func TestMergeAndCloseActionsAreTerminalCleanupEvents(t *testing.T) {
+	if normalizeGitHubAction("closed") != ActionClose {
+		t.Fatal("github close was not terminal")
+	}
+	if normalizeGitLabAction("merge", "merged") != ActionClose {
+		t.Fatal("gitlab merge was not terminal")
+	}
+}
+
 func githubPayload(action string, branch string, sha string) string {
 	return githubPayloadWithNumber(action, "2101", branch, sha)
 }
