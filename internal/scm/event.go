@@ -218,11 +218,7 @@ func normalizeGitLabAction(action string, state string) EventAction {
 }
 
 func branchToEnvironmentID(branch string) string {
-	branch = strings.ToLower(strings.TrimSpace(branch))
-	if branch == "" {
-		return ""
-	}
-	return normalizeIdentifier(branch)
+	return domain.BranchEnvironmentNameFor("default", "", branch, "scm", "").ID
 }
 
 func normalizeIdentifier(value string) string {

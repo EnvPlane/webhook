@@ -290,6 +290,17 @@ func TestSCMNormalizationHelpers(t *testing.T) {
 	}
 }
 
+func TestBranchNativeEnvironmentNamingUsesDisplayAndCanonicalID(t *testing.T) {
+	event := PullRequestEvent{Provider: ProviderGitHub, Repo: "owner/repo", Branch: "feature/CMS_Login", ChangeID: "123"}
+	name := event.EnvironmentName("checkout")
+	if name.DisplayName != "feature-cms-login" || !name.Valid() || len(name.ID) > 63 {
+		t.Fatalf("unexpected naming: %+v", name)
+	}
+	if event.EnvironmentID() != "pr-123" {
+		t.Fatalf("legacy compatibility ID changed: %q", event.EnvironmentID())
+	}
+}
+
 func githubPayload(action string, branch string, sha string) string {
 	return githubPayloadWithNumber(action, "2101", branch, sha)
 }
