@@ -269,8 +269,9 @@ func TestSCMNormalizationHelpers(t *testing.T) {
 			if got := normalizeIdentifier(tt.input); got != tt.want {
 				t.Fatalf("normalizeIdentifier = %q, want %q", got, tt.want)
 			}
-			if got := branchToEnvironmentID(tt.input); got != tt.want {
-				t.Fatalf("branchToEnvironmentID = %q, want %q", got, tt.want)
+			expected := domain.BranchEnvironmentNameFor("default", "", tt.input, "scm", "").ID
+			if got := branchToEnvironmentID(tt.input); got != expected {
+				t.Fatalf("branchToEnvironmentID = %q, want %q", got, expected)
 			}
 		})
 	}
