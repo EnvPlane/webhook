@@ -94,7 +94,7 @@ jobs:
       - name: Scan published image for high and critical vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ghcr.io/envplane/webhook:sha-${{ github.sha }}
+          image-ref: ghcr.io/EnvPlane/webhook:sha-${{ github.sha }}
           format: table
           vuln-type: os,library
           severity: HIGH,CRITICAL
