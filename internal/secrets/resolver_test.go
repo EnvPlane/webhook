@@ -7,17 +7,17 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/envpilot/contracts/domain"
+	"github.com/envplane/contracts/domain"
 )
 
 func TestResolverResolvesEnvSecret(t *testing.T) {
-	t.Setenv("ENVPILOT_TEST_TOKEN", "env-token")
+	t.Setenv("ENVPLANE_TEST_TOKEN", "env-token")
 	resolver := NewResolver()
 
 	value, err := resolver.Resolve(context.Background(), domain.SecretReference{
 		ID:        "git-token",
 		Provider:  "env",
-		Reference: "ENVPILOT_TEST_TOKEN",
+		Reference: "ENVPLANE_TEST_TOKEN",
 	})
 	if err != nil {
 		t.Fatalf("resolve env: %v", err)
@@ -28,13 +28,13 @@ func TestResolverResolvesEnvSecret(t *testing.T) {
 }
 
 func TestValidateDoesNotExposeSecretValue(t *testing.T) {
-	t.Setenv("ENVPILOT_TEST_TOKEN", "super-secret-token")
+	t.Setenv("ENVPLANE_TEST_TOKEN", "super-secret-token")
 	resolver := NewResolver()
 
 	result := resolver.Validate(context.Background(), domain.SecretReference{
 		ID:        "git-token",
 		Provider:  "env",
-		Reference: "ENVPILOT_TEST_TOKEN",
+		Reference: "ENVPLANE_TEST_TOKEN",
 	})
 	if !result.Valid {
 		t.Fatalf("expected valid result: %+v", result)

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/envpilot/webhook/internal/scm"
+	"github.com/envplane/webhook/internal/scm"
 )
 
 func TestGitHubWebhookValidatesSignatureAndSubmitsNormalizedJob(t *testing.T) {
@@ -103,7 +103,7 @@ func TestGitHubIssueCommentWebhookSubmitsCommand(t *testing.T) {
 	}))
 	defer controlPlane.Close()
 	application := newTestServer(t, controlPlane.URL)
-	body := []byte(`{"action":"created","issue":{"number":42,"html_url":"https://github.com/owner/repo/issues/42","pull_request":{"url":"https://api.github.com/repos/owner/repo/pulls/42"}},"comment":{"body":"/envpilot destroy","user":{"login":"octocat"}},"repository":{"full_name":"owner/repo"}}`)
+	body := []byte(`{"action":"created","issue":{"number":42,"html_url":"https://github.com/owner/repo/issues/42","pull_request":{"url":"https://api.github.com/repos/owner/repo/pulls/42"}},"comment":{"body":"/envplane destroy","user":{"login":"octocat"}},"repository":{"full_name":"owner/repo"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", bytes.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "issue_comment")
 	req.Header.Set("X-GitHub-Delivery", "comment-42")

@@ -21,15 +21,15 @@ Stateless GitHub and GitLab webhook receiver for [EnvPlane](https://envplane.dev
 ## Local development
 
 ```bash
-ENVPILOT_CONTROL_PLANE_URL=http://localhost:8080 \
-ENVPILOT_CONTROL_PLANE_TOKEN=write-token \
-ENVPILOT_GITHUB_WEBHOOK_SECRET=development-secret \
+ENVPLANE_CONTROL_PLANE_URL=http://localhost:8080 \
+ENVPLANE_CONTROL_PLANE_TOKEN=write-token \
+ENVPLANE_GITHUB_WEBHOOK_SECRET=development-secret \
 go run ./apps/webhook
 ```
 
 The existing environment variable names are retained for runtime compatibility.
 The standalone Helm chart is maintained in
-[EnvPlane/deploy](https://github.com/EnvPlane/deploy/tree/main/deploy/helm/envpilot-webhook).
+[EnvPlane/deploy](https://github.com/EnvPlane/deploy/tree/main/deploy/helm/envplane-webhook).
 
 ## Security
 

@@ -27,9 +27,9 @@ jobs:
       - id: source_read_auth
         name: Select source authentication
         env:
-          CLIENT_ID: ${{ secrets.ENVPILOT_AUTOMATION_APP_CLIENT_ID }}
-          APP_PRIVATE_KEY: ${{ secrets.ENVPILOT_AUTOMATION_APP_PRIVATE_KEY }}
-          FALLBACK_PAT: ${{ secrets.ENVPILOT_AUTOMATION_PAT }}
+          CLIENT_ID: ${{ secrets.ENVPLANE_AUTOMATION_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.ENVPLANE_AUTOMATION_APP_PRIVATE_KEY }}
+          FALLBACK_PAT: ${{ secrets.ENVPLANE_AUTOMATION_PAT }}
         run: |
           if [[ -n "$CLIENT_ID" && -n "$APP_PRIVATE_KEY" ]]; then
             echo "method=app" >> "$GITHUB_OUTPUT"
@@ -42,17 +42,17 @@ jobs:
       - id: source_read_app
         if: steps.source_read_auth.outputs.method == 'app'
         env:
-          ENVPILOT_AUTOMATION_APP_CLIENT_ID: ${{ secrets.ENVPILOT_AUTOMATION_APP_CLIENT_ID }}
-          ENVPILOT_AUTOMATION_APP_PRIVATE_KEY: ${{ secrets.ENVPILOT_AUTOMATION_APP_PRIVATE_KEY }}
+          ENVPLANE_AUTOMATION_APP_CLIENT_ID: ${{ secrets.ENVPLANE_AUTOMATION_APP_CLIENT_ID }}
+          ENVPLANE_AUTOMATION_APP_PRIVATE_KEY: ${{ secrets.ENVPLANE_AUTOMATION_APP_PRIVATE_KEY }}
           GH_APP_OWNER: ${{ github.repository_owner }}
           GH_APP_REPOSITORY: deploy
           GH_APP_TOKEN_PERMISSIONS: '{"contents":"read"}'
         run: ./scripts/obtain-github-app-token.sh
       - name: Configure private Go modules
         env:
-          SOURCE_TOKEN: ${{ steps.source_read_app.outputs.token || secrets.ENVPILOT_AUTOMATION_PAT }}
+          SOURCE_TOKEN: ${{ steps.source_read_app.outputs.token || secrets.ENVPLANE_AUTOMATION_PAT }}
         run: |
-          echo 'GOPRIVATE=github.com/envpilot/*' >> "$GITHUB_ENV"
+          echo 'GOPRIVATE=github.com/envplane/*' >> "$GITHUB_ENV"
           git config --global url."https://x-access-token:${SOURCE_TOKEN}@github.com/".insteadOf "https://github.com/"
       - name: Ensure Go toolchain
         run: |
@@ -62,7 +62,7 @@ jobs:
         run: echo "GOTOOLCHAIN=go$(awk '/^go[[:space:]]/ {print $2; exit}' go.mod)" >> "$GITHUB_ENV"
       - name: Use published contracts module
         run: |
-          go mod edit -dropreplace=github.com/envpilot/contracts
+          go mod edit -dropreplace=github.com/envplane/contracts
           go mod tidy
       - run: go test ./...
       - uses: docker/setup-buildx-action@v4
@@ -88,7 +88,7 @@ jobs:
           cache-from: type=gha,scope=webhook
           cache-to: type=gha,mode=max,scope=webhook
           secrets: |
-            github_token=${{ steps.source_read_app.outputs.token || secrets.ENVPILOT_AUTOMATION_PAT }}
+            github_token=${{ steps.source_read_app.outputs.token || secrets.ENVPLANE_AUTOMATION_PAT }}
           provenance: mode=max
           sbom: true
       - name: Scan published image for high and critical vulnerabilities
