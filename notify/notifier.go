@@ -4,9 +4,9 @@ package notify
 import (
 	"context"
 
-	"github.com/envpilot/contracts/domain"
-	"github.com/envpilot/webhook/internal/notify"
-	"github.com/envpilot/webhook/secrets"
+	"github.com/envplane/contracts/domain"
+	"github.com/envplane/webhook/internal/notify"
+	"github.com/envplane/webhook/secrets"
 )
 
 type SettingsProvider = notify.SettingsProvider

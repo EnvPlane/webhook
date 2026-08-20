@@ -31,7 +31,7 @@ jobs:
             webhook-go-cache-${{ runner.os }}-
       - name: Use published contracts module
         run: |
-          go mod edit -dropreplace=github.com/envpilot/contracts
+          go mod edit -dropreplace=github.com/envplane/contracts
           go mod tidy
       - name: Download modules before running repository code
         run: go mod download

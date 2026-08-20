@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/envpilot/contracts/domain"
+	"github.com/envplane/contracts/domain"
 )
 
 type Provider = domain.Provider
@@ -147,7 +147,7 @@ func ParseGitLabMergeRequest(body []byte) (PullRequestEvent, error) {
 func parseEnvPlaneCommand(body string) (PRCommand, time.Duration, string, bool) {
 	for _, line := range strings.Split(body, "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) < 2 || fields[0] != "/envpilot" {
+		if len(fields) < 2 || fields[0] != "/envplane" {
 			continue
 		}
 		switch fields[1] {

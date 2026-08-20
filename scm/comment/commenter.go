@@ -1,9 +1,9 @@
 // Package comment exposes the canonical SCM PR commenter.
 package comment
 
-import "github.com/envpilot/contracts/domain"
+import "github.com/envplane/contracts/domain"
 
-import internal "github.com/envpilot/webhook/internal/scm/comment"
+import internal "github.com/envplane/webhook/internal/scm/comment"
 
 type Commenter = internal.Commenter
 type Config = internal.Config

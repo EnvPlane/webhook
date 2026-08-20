@@ -1,7 +1,7 @@
 // Package scm exposes the canonical SCM webhook parser to other services.
 package scm
 
-import internal "github.com/envpilot/webhook/internal/scm"
+import internal "github.com/envplane/webhook/internal/scm"
 
 type Provider = internal.Provider
 type EventAction = internal.EventAction

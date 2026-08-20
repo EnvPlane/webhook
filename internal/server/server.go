@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/envpilot/webhook/internal/scm"
+	"github.com/envplane/webhook/internal/scm"
 )
 
 const maxWebhookBody = 2 << 20
@@ -36,13 +36,13 @@ type Config struct {
 
 func ConfigFromEnv() Config {
 	return Config{
-		Addr:                envOrDefault("ENVPILOT_WEBHOOK_ADDR", ":8080"),
-		ControlPlaneURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("ENVPILOT_CONTROL_PLANE_URL")), "/"),
-		ControlPlaneToken:   strings.TrimSpace(os.Getenv("ENVPILOT_CONTROL_PLANE_TOKEN")),
-		GitHubWebhookSecret: strings.TrimSpace(os.Getenv("ENVPILOT_GITHUB_WEBHOOK_SECRET")),
-		GitLabWebhookToken:  strings.TrimSpace(os.Getenv("ENVPILOT_GITLAB_WEBHOOK_TOKEN")),
-		RequestTimeout:      durationFromEnv("ENVPILOT_WEBHOOK_REQUEST_TIMEOUT", 10*time.Second),
-		ReadyStaleAfter:     durationFromEnv("ENVPILOT_WEBHOOK_READY_STALE_AFTER", 2*time.Minute),
+		Addr:                envOrDefault("ENVPLANE_WEBHOOK_ADDR", ":8080"),
+		ControlPlaneURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_URL")), "/"),
+		ControlPlaneToken:   strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_TOKEN")),
+		GitHubWebhookSecret: strings.TrimSpace(os.Getenv("ENVPLANE_GITHUB_WEBHOOK_SECRET")),
+		GitLabWebhookToken:  strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_WEBHOOK_TOKEN")),
+		RequestTimeout:      durationFromEnv("ENVPLANE_WEBHOOK_REQUEST_TIMEOUT", 10*time.Second),
+		ReadyStaleAfter:     durationFromEnv("ENVPLANE_WEBHOOK_READY_STALE_AFTER", 2*time.Minute),
 	}
 }
 
@@ -51,13 +51,13 @@ func (c Config) Validate() error {
 		return fmt.Errorf("webhook address is required")
 	}
 	if strings.TrimSpace(c.ControlPlaneURL) == "" {
-		return fmt.Errorf("ENVPILOT_CONTROL_PLANE_URL is required")
+		return fmt.Errorf("ENVPLANE_CONTROL_PLANE_URL is required")
 	}
 	if !strings.HasPrefix(c.ControlPlaneURL, "http://") && !strings.HasPrefix(c.ControlPlaneURL, "https://") {
-		return fmt.Errorf("ENVPILOT_CONTROL_PLANE_URL must be an HTTP(S) URL")
+		return fmt.Errorf("ENVPLANE_CONTROL_PLANE_URL must be an HTTP(S) URL")
 	}
 	if strings.TrimSpace(c.ControlPlaneToken) == "" {
-		return fmt.Errorf("ENVPILOT_CONTROL_PLANE_TOKEN is required")
+		return fmt.Errorf("ENVPLANE_CONTROL_PLANE_TOKEN is required")
 	}
 	if strings.TrimSpace(c.GitHubWebhookSecret) == "" && strings.TrimSpace(c.GitLabWebhookToken) == "" {
 		return fmt.Errorf("configure at least one webhook provider secret")

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/envpilot/contracts/domain"
-	"github.com/envpilot/webhook/internal/secrets"
+	"github.com/envplane/contracts/domain"
+	"github.com/envplane/webhook/internal/secrets"
 )
 
 type testSettingsProvider struct {

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/envpilot/contracts/domain"
+	"github.com/envplane/contracts/domain"
 )
 
 func TestWebhookLabelsRejectUnsupportedShapes(t *testing.T) {
@@ -193,7 +193,7 @@ func TestParseGitLabMergeRequestClosedEvent(t *testing.T) {
 }
 
 func TestParseGitHubPRCommand(t *testing.T) {
-	command, err := ParseGitHubPRCommand([]byte(githubIssueCommentPayload("/envpilot pin 7d")))
+	command, err := ParseGitHubPRCommand([]byte(githubIssueCommentPayload("/envplane pin 7d")))
 	if err != nil {
 		t.Fatalf("parse github command: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestParseGitHubPRCommand(t *testing.T) {
 }
 
 func TestParseGitLabPRCommand(t *testing.T) {
-	command, err := ParseGitLabPRCommand([]byte(gitlabNotePayload("/envpilot destroy")))
+	command, err := ParseGitLabPRCommand([]byte(gitlabNotePayload("/envplane destroy")))
 	if err != nil {
 		t.Fatalf("parse gitlab command: %v", err)
 	}

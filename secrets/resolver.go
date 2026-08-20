@@ -4,7 +4,7 @@ package secrets
 import (
 	"net/http"
 
-	internal "github.com/envpilot/webhook/internal/secrets"
+	internal "github.com/envplane/webhook/internal/secrets"
 )
 
 type Resolver = internal.Resolver

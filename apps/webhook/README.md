@@ -1,4 +1,4 @@
-# envpilot-webhook
+# envplane-webhook
 
 Production entrypoint for the standalone webhook receiver:
 

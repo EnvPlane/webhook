@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	webhookserver "github.com/envpilot/webhook/internal/server"
+	webhookserver "github.com/envplane/webhook/internal/server"
 )
 
 func main() {
@@ -32,7 +32,7 @@ func main() {
 		_ = server.Shutdown(shutdownContext)
 	}()
 
-	logger.Info("envpilot webhook started", "address", cfg.Addr, "control_plane_url", cfg.ControlPlaneURL)
+	logger.Info("envplane webhook started", "address", cfg.Addr, "control_plane_url", cfg.ControlPlaneURL)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("webhook server stopped", "error", err)
 		os.Exit(1)
