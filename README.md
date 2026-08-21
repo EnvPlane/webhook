@@ -31,6 +31,12 @@ The existing environment variable names are retained for runtime compatibility.
 The standalone Helm chart is maintained in
 [EnvPlane/deploy](https://github.com/EnvPlane/deploy/tree/main/deploy/helm/envplane-webhook).
 
+The optional `/envplane ai-create` PR/MR command remains disabled unless the matching
+project explicitly opts in. When enabled, the control plane returns a typed proposal;
+the webhook can publish the review comment using
+`ENVPLANE_GITHUB_COMMENT_TOKEN` or `ENVPLANE_GITLAB_COMMENT_TOKEN`. These outbound
+comment credentials are never included in forwarded proposal data or logs.
+
 ## Security
 
 Reject unsigned or invalid events before normalization. Keep webhook secrets

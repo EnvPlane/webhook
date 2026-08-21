@@ -211,6 +211,26 @@ func TestParseGitHubPRCommand(t *testing.T) {
 	}
 }
 
+func TestParseGitHubAICreateCommandIsExplicitAndCarriesSafeContext(t *testing.T) {
+	command, err := ParseGitHubPRCommand([]byte(`{"action":"created","issue":{"number":42,"html_url":"https://github.com/owner/repo/issues/42","pull_request":{"url":"https://api.github.com/repos/owner/repo/pulls/42","head":{"ref":"feature/demo"},"changed_paths":["deploy/chart/values.yaml"]}},"comment":{"body":"/envplane ai-create","user":{"login":"octocat"}},"repository":{"full_name":"owner/repo"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Command != CommandAICreate || command.Branch != "feature/demo" || len(command.ChangedPaths) != 1 {
+		t.Fatalf("unexpected command: %#v", command)
+	}
+}
+
+func TestParseGitHubAICreateCommandRejectsArguments(t *testing.T) {
+	command, err := ParseGitHubPRCommand([]byte(githubIssueCommentPayload("/envplane ai-create now")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Command != "" {
+		t.Fatalf("ai-create arguments must not activate command: %#v", command)
+	}
+}
+
 func TestParseGitLabPRCommand(t *testing.T) {
 	command, err := ParseGitLabPRCommand([]byte(gitlabNotePayload("/envplane destroy")))
 	if err != nil {

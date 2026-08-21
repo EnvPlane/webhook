@@ -27,6 +27,7 @@ const (
 	CommandRecreate = domain.CommandRecreate
 	CommandDestroy  = domain.CommandDestroy
 	CommandPin      = domain.CommandPin
+	CommandAICreate = domain.CommandAICreate
 )
 
 func ParseGitHubPRCommand(body []byte) (PullRequestCommand, error) {
@@ -55,6 +56,8 @@ func ParseGitHubPRCommand(body []byte) (PullRequestCommand, error) {
 		InstallationID: normalizeWebhookInstallationID(event.Installation.ID),
 		PinDuration:    duration,
 		PinRaw:         raw,
+		Branch:         event.Issue.PullRequest.Head.Ref,
+		ChangedPaths:   append([]string(nil), event.Issue.PullRequest.ChangedPaths...),
 	}, nil
 }
 
@@ -84,6 +87,8 @@ func ParseGitLabPRCommand(body []byte) (PullRequestCommand, error) {
 		InstallationID: normalizeWebhookProjectID(event.Project.ID),
 		PinDuration:    duration,
 		PinRaw:         raw,
+		Branch:         event.MergeRequest.SourceBranch,
+		ChangedPaths:   append([]string(nil), event.MergeRequest.ChangedPaths...),
 	}, nil
 }
 
@@ -164,6 +169,11 @@ func parseEnvPlaneCommand(body string) (PRCommand, time.Duration, string, bool) 
 				return "", 0, "", false
 			}
 			return CommandPin, duration, fields[2], true
+		case string(CommandAICreate):
+			if len(fields) != 2 {
+				return "", 0, "", false
+			}
+			return CommandAICreate, 0, "", true
 		default:
 			return "", 0, "", false
 		}
@@ -256,8 +266,10 @@ type gitLabCommit struct {
 }
 
 type gitLabNoteMergeRequest struct {
-	IID int    `json:"iid"`
-	URL string `json:"url"`
+	IID          int      `json:"iid"`
+	URL          string   `json:"url"`
+	SourceBranch string   `json:"source_branch"`
+	ChangedPaths []string `json:"changed_paths"`
 }
 
 type gitLabNoteAttributes struct {
@@ -325,7 +337,9 @@ type githubIssue struct {
 }
 
 type githubIssuePullRequest struct {
-	URL string `json:"url"`
+	URL          string          `json:"url"`
+	Head         githubBranchRef `json:"head"`
+	ChangedPaths []string        `json:"changed_paths"`
 }
 
 type githubComment struct {
