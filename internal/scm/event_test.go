@@ -295,22 +295,7 @@ func TestSCMParsersRejectMalformedJSON(t *testing.T) {
 	}
 }
 
-func TestSCMNormalizationHelpers(t *testing.T) {
-	for _, tt := range []struct{ name, input, want string }{
-		{"branch", " Feature/ABC_42 ", "feature-abc-42"},
-		{"unicode", "ümlaut", "mlaut"},
-		{"empty", "---", ""},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := normalizeIdentifier(tt.input); got != tt.want {
-				t.Fatalf("normalizeIdentifier = %q, want %q", got, tt.want)
-			}
-			expected := domain.BranchEnvironmentNameFor("default", "", tt.input, "scm", "").ID
-			if got := branchToEnvironmentID(tt.input); got != expected {
-				t.Fatalf("branchToEnvironmentID = %q, want %q", got, expected)
-			}
-		})
-	}
+func TestSCMCommandDuration(t *testing.T) {
 	for _, tt := range []struct {
 		input string
 		want  time.Duration

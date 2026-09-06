@@ -220,14 +220,6 @@ func normalizeGitLabAction(action string, state string) EventAction {
 	}
 }
 
-func branchToEnvironmentID(branch string) string {
-	return domain.BranchEnvironmentNameFor("default", "", branch, "scm", "").ID
-}
-
-func normalizeIdentifier(value string) string {
-	return domain.NormalizeEnvironmentID(value)
-}
-
 type gitLabMergeRequestEvent struct {
 	ObjectKind       string                       `json:"object_kind"`
 	User             gitLabUser                   `json:"user"`
