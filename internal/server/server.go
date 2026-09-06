@@ -649,10 +649,12 @@ func validGitHubSignature(secret, signature string, body []byte) bool {
 
 func validGitLabToken(want, got string) bool {
 	want = strings.TrimSpace(want)
-	if want == "" || len(want) != len(got) {
+	if want == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
+	wantDigest := sha256.Sum256([]byte(want))
+	gotDigest := sha256.Sum256([]byte(got))
+	return subtle.ConstantTimeCompare(wantDigest[:], gotDigest[:]) == 1
 }
 
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {

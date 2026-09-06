@@ -317,9 +317,24 @@ func githubSignature(secret string, body []byte) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
-func TestGitLabTokenComparisonRejectsDifferentLength(t *testing.T) {
-	if validGitLabToken("secret", "secret ") || validGitLabToken("secret", strings.Repeat("x", 7)) {
-		t.Fatal("invalid GitLab token accepted")
+func TestGitLabTokenComparisonUsesFixedLengthDigests(t *testing.T) {
+	tests := []struct {
+		name string
+		got  string
+		want bool
+	}{
+		{name: "exact match", got: "secret", want: true},
+		{name: "same length mismatch", got: "secrex"},
+		{name: "short mismatch", got: "x"},
+		{name: "long mismatch", got: strings.Repeat("x", 128)},
+		{name: "empty mismatch", got: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := validGitLabToken("secret", tt.got); got != tt.want {
+				t.Fatalf("validGitLabToken(..., %q) = %v, want %v", tt.got, got, tt.want)
+			}
+		})
 	}
 }
 
