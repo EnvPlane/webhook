@@ -35,6 +35,8 @@ jobs:
           go mod tidy
       - name: Verify contracts pin is current
         run: ./scripts/check-contract-version.sh
+      - name: Verify isolated module build
+        run: GOWORK=off go build ./...
       - name: Download modules before running repository code
         run: go mod download
       - name: Scan Go dependencies
