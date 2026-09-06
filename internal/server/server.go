@@ -399,6 +399,9 @@ func (s *Server) rejectGitLabToken(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusUnauthorized, errors.New("invalid webhook token"))
 }
 
+// The control-plane jobs API must deduplicate requests by Idempotency-Key and
+// return the original result for repeated keys. This protects retries after a
+// response is lost between the two services.
 func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRequestEvent) {
 	started := time.Now()
 	payload, err := json.Marshal(event)
@@ -418,6 +421,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRe
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-EnvPlane-Webhook-Provider", string(event.Provider))
+	req.Header.Set("Idempotency-Key", strings.TrimSpace(event.EventID))
 	response, err := s.client.Do(req)
 	if err != nil {
 		s.logger.Error("control-plane job submission failed", "provider", event.Provider, "event_id", event.EventID, "error", err)
@@ -481,6 +485,8 @@ func authorizeCommand(command scm.PullRequestCommand) error {
 	}
 }
 
+// The control-plane commands API shares the same Idempotency-Key contract as
+// the jobs API and must not create a second job for a repeated delivery.
 func (s *Server) submitCommand(w http.ResponseWriter, r *http.Request, command scm.PullRequestCommand) {
 	started := time.Now()
 	payload, err := json.Marshal(command)
@@ -498,6 +504,7 @@ func (s *Server) submitCommand(w http.ResponseWriter, r *http.Request, command s
 	}
 	req.Header.Set("Authorization", "Bearer "+s.cfg.ControlPlaneToken)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", strings.TrimSpace(command.EventID))
 	response, err := s.client.Do(req)
 	if err != nil {
 		s.logger.Error("control-plane command submission failed", "provider", command.Provider, "event_id", command.EventID, "error", err)

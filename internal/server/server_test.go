@@ -32,6 +32,10 @@ func TestGitHubWebhookValidatesSignatureAndSubmitsNormalizedJob(t *testing.T) {
 			http.Error(w, "unexpected authorization", http.StatusUnauthorized)
 			return
 		}
+		if got := r.Header.Get("Idempotency-Key"); got != "delivery-42" {
+			http.Error(w, "unexpected idempotency key", http.StatusBadRequest)
+			return
+		}
 		var event scm.PullRequestEvent
 		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
 			http.Error(w, "decode normalized event: "+err.Error(), http.StatusBadRequest)
@@ -105,6 +109,10 @@ func TestGitHubIssueCommentWebhookSubmitsCommand(t *testing.T) {
 			http.Error(w, "unexpected control-plane path", http.StatusBadRequest)
 			return
 		}
+		if got := r.Header.Get("Idempotency-Key"); got != "comment-42" {
+			http.Error(w, "unexpected idempotency key", http.StatusBadRequest)
+			return
+		}
 		if err := json.NewDecoder(r.Body).Decode(&command); err != nil {
 			http.Error(w, "decode command: "+err.Error(), http.StatusBadRequest)
 			return
@@ -129,6 +137,10 @@ func TestGitHubIssueCommentWebhookSubmitsCommand(t *testing.T) {
 func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	var received scm.PullRequestEvent
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Idempotency-Key"); got != "gitlab-delivery-7" {
+			http.Error(w, "unexpected idempotency key", http.StatusBadRequest)
+			return
+		}
 		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 			http.Error(w, "decode event: "+err.Error(), http.StatusBadRequest)
 			return
