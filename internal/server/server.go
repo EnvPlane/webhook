@@ -93,7 +93,7 @@ func gitLabMemberAccessResolverFromEnv() func(context.Context, string, string) (
 		if err != nil {
 			return 0, err
 		}
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		if response.StatusCode == http.StatusNotFound {
 			return 0, nil
 		}
