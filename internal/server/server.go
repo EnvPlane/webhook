@@ -22,7 +22,11 @@ import (
 	"github.com/envplane/webhook/internal/scm"
 )
 
-const maxWebhookBody = 2 << 20
+const (
+	maxWebhookBody          = 2 << 20
+	defaultReplayTTL        = 15 * time.Minute
+	maxRememberedDeliveries = 4096
+)
 
 type Config struct {
 	Addr                string
@@ -32,6 +36,7 @@ type Config struct {
 	GitLabTokenResolver func(context.Context, string, string) (string, error)
 	RequestTimeout      time.Duration
 	ReadyStaleAfter     time.Duration
+	ReplayTTL           time.Duration
 }
 
 func ConfigFromEnv() Config {
@@ -44,6 +49,7 @@ func ConfigFromEnv() Config {
 		GitLabTokenResolver: gitLabResolver,
 		RequestTimeout:      durationFromEnv("ENVPLANE_WEBHOOK_REQUEST_TIMEOUT", 10*time.Second),
 		ReadyStaleAfter:     durationFromEnv("ENVPLANE_WEBHOOK_READY_STALE_AFTER", 2*time.Minute),
+		ReplayTTL:           durationFromEnv("ENVPLANE_WEBHOOK_REPLAY_TTL", defaultReplayTTL),
 	}
 }
 
@@ -94,6 +100,9 @@ func (c Config) Validate() error {
 	if c.ReadyStaleAfter <= 0 {
 		return fmt.Errorf("webhook readiness stale threshold must be positive")
 	}
+	if c.ReplayTTL <= 0 {
+		return fmt.Errorf("webhook replay TTL must be positive")
+	}
 	return nil
 }
 
@@ -106,11 +115,16 @@ type Server struct {
 	forwardCount            uint64
 	forwardSeconds          float64
 	lastControlPlaneSuccess int64
+	replayMu                sync.Mutex
+	recentDeliveries        map[string]time.Time
 }
 
 func New(cfg Config, client *http.Client, logger *slog.Logger) (*Server, error) {
 	if cfg.ReadyStaleAfter == 0 {
 		cfg.ReadyStaleAfter = 2 * time.Minute
+	}
+	if cfg.ReplayTTL == 0 {
+		cfg.ReplayTTL = defaultReplayTTL
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -121,7 +135,7 @@ func New(cfg Config, client *http.Client, logger *slog.Logger) (*Server, error) 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, client: client, logger: logger, deliveries: map[string]uint64{}}, nil
+	return &Server{cfg: cfg, client: client, logger: logger, deliveries: map[string]uint64{}, recentDeliveries: map[string]time.Time{}}, nil
 }
 
 func (s *Server) Routes() http.Handler {
@@ -219,6 +233,9 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, err)
 			return
 		}
+		if s.rejectReplay(w, r, provider, command.EventID) {
+			return
+		}
 		s.submitCommand(w, r, command)
 		return
 	}
@@ -238,6 +255,9 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 	if event.Action == scm.ActionIgnore {
 		s.recordDelivery(provider, "ignored_event")
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
+		return
+	}
+	if s.rejectReplay(w, r, provider, event.EventID) {
 		return
 	}
 	s.submit(w, r, event)
@@ -278,6 +298,9 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, err)
 			return
 		}
+		if s.rejectReplay(w, r, string(scm.ProviderGitLab), command.EventID) {
+			return
+		}
 		s.submitCommand(w, r, command)
 		return
 	}
@@ -312,7 +335,50 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if s.rejectReplay(w, r, string(scm.ProviderGitLab), event.EventID) {
+		return
+	}
 	s.submit(w, r, event)
+}
+
+// The replay cache is process-local. Multi-replica deployments need sticky routing
+// or a shared idempotency store in front of this service for cluster-wide protection.
+func (s *Server) rejectReplay(w http.ResponseWriter, r *http.Request, provider, deliveryID string) bool {
+	deliveryID = strings.TrimSpace(deliveryID)
+	if deliveryID == "" {
+		s.recordDelivery(provider, "missing_delivery_id")
+		s.logRejection(r, provider, "missing_delivery_id", r.Header.Get("X-GitHub-Event"))
+		writeError(w, http.StatusBadRequest, errors.New("webhook delivery id is required"))
+		return true
+	}
+	key := provider + "|" + deliveryID
+	now := time.Now()
+	s.replayMu.Lock()
+	for rememberedKey, seenAt := range s.recentDeliveries {
+		if now.Sub(seenAt) >= s.cfg.ReplayTTL {
+			delete(s.recentDeliveries, rememberedKey)
+		}
+	}
+	if _, exists := s.recentDeliveries[key]; exists {
+		s.replayMu.Unlock()
+		s.recordDelivery(provider, "duplicate_ignored")
+		s.logRejection(r, provider, "duplicate_delivery", r.Header.Get("X-GitHub-Event"))
+		writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate_ignored"})
+		return true
+	}
+	if len(s.recentDeliveries) >= maxRememberedDeliveries {
+		var oldestKey string
+		var oldest time.Time
+		for rememberedKey, seenAt := range s.recentDeliveries {
+			if oldestKey == "" || seenAt.Before(oldest) {
+				oldestKey, oldest = rememberedKey, seenAt
+			}
+		}
+		delete(s.recentDeliveries, oldestKey)
+	}
+	s.recentDeliveries[key] = now
+	s.replayMu.Unlock()
+	return false
 }
 
 func (s *Server) validGitLabRequest(r *http.Request, projectID, projectPath string) bool {

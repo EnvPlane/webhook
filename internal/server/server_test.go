@@ -58,6 +58,15 @@ func TestGitHubWebhookValidatesSignatureAndSubmitsNormalizedJob(t *testing.T) {
 	if rec.Code != http.StatusOK || submissions.Load() != 1 {
 		t.Fatalf("webhook response=%d body=%s submissions=%d", rec.Code, rec.Body.String(), submissions.Load())
 	}
+	duplicate := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", bytes.NewReader(body))
+	duplicate.Header.Set("X-GitHub-Event", "pull_request")
+	duplicate.Header.Set("X-GitHub-Delivery", "delivery-42")
+	duplicate.Header.Set("X-Hub-Signature-256", githubSignature("github-secret", body))
+	duplicateRec := httptest.NewRecorder()
+	application.Routes().ServeHTTP(duplicateRec, duplicate)
+	if duplicateRec.Code != http.StatusOK || submissions.Load() != 1 || !strings.Contains(duplicateRec.Body.String(), "duplicate_ignored") {
+		t.Fatalf("duplicate response=%d body=%s submissions=%d", duplicateRec.Code, duplicateRec.Body.String(), submissions.Load())
+	}
 }
 
 func TestGitHubWebhookRejectsInvalidSignatureWithoutSubmission(t *testing.T) {
@@ -139,6 +148,15 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 
 	if rec.Code != http.StatusOK || received.Provider != scm.ProviderGitLab || received.ChangeID != "7" || received.EventID != "gitlab-delivery-7" {
 		t.Fatalf("response=%d event=%#v body=%s", rec.Code, received, rec.Body.String())
+	}
+	duplicate := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
+	duplicate.Header.Set("X-Gitlab-Event", "Merge Request Hook")
+	duplicate.Header.Set("X-Gitlab-Token", "gitlab-token")
+	duplicate.Header.Set("X-Gitlab-Event-UUID", "gitlab-delivery-7")
+	duplicateRec := httptest.NewRecorder()
+	application.Routes().ServeHTTP(duplicateRec, duplicate)
+	if duplicateRec.Code != http.StatusOK || !strings.Contains(duplicateRec.Body.String(), "duplicate_ignored") {
+		t.Fatalf("duplicate response=%d body=%s", duplicateRec.Code, duplicateRec.Body.String())
 	}
 }
 
