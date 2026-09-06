@@ -146,6 +146,51 @@ func TestWebhookRateLimitRejectsExcessRequests(t *testing.T) {
 	}
 }
 
+func TestWebhookRetriesTemporaryControlPlaneFailure(t *testing.T) {
+	var attempts atomic.Int32
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		if got := r.Header.Get("Idempotency-Key"); got != "retry-delivery" {
+			http.Error(w, "unexpected idempotency key", http.StatusBadRequest)
+			return
+		}
+		if attempts.Load() == 1 {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"id":"job-retried"}`)
+	}))
+	defer controlPlane.Close()
+	application, err := New(Config{
+		Addr:                ":8080",
+		ControlPlaneURL:     controlPlane.URL,
+		ControlPlaneToken:   "control-plane-token",
+		GitHubWebhookSecret: "github-secret",
+		RequestTimeout:      time.Second,
+		ReadyStaleAfter:     time.Second,
+		ReplayTTL:           time.Minute,
+		RateLimitPerSecond:  100,
+		RateLimitBurst:      10,
+		ControlPlaneRetries: 3,
+		RetryBackoff:        time.Millisecond,
+	}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"action":"opened","number":42,"pull_request":{"number":42,"html_url":"https://github.com/owner/repo/pull/42","draft":false,"head":{"ref":"feature/42","sha":"abc42"},"user":{"login":"octocat"},"labels":[]},"repository":{"full_name":"owner/repo"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", bytes.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-GitHub-Delivery", "retry-delivery")
+	req.Header.Set("X-Hub-Signature-256", githubSignature("github-secret", body))
+	rec := httptest.NewRecorder()
+	application.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || attempts.Load() != 2 || !strings.Contains(rec.Body.String(), "accepted") {
+		t.Fatalf("response=%d attempts=%d body=%s", rec.Code, attempts.Load(), rec.Body.String())
+	}
+}
+
 func TestGitHubIssueCommentWebhookSubmitsCommand(t *testing.T) {
 	var command scm.PullRequestCommand
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

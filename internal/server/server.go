@@ -43,6 +43,8 @@ type Config struct {
 	ReplayTTL           time.Duration
 	RateLimitPerSecond  float64
 	RateLimitBurst      int
+	ControlPlaneRetries int
+	RetryBackoff        time.Duration
 }
 
 func ConfigFromEnv() Config {
@@ -58,6 +60,8 @@ func ConfigFromEnv() Config {
 		ReplayTTL:           durationFromEnv("ENVPLANE_WEBHOOK_REPLAY_TTL", defaultReplayTTL),
 		RateLimitPerSecond:  floatFromEnv("ENVPLANE_WEBHOOK_RATE_LIMIT_RPS", defaultRatePerSecond),
 		RateLimitBurst:      intFromEnv("ENVPLANE_WEBHOOK_RATE_LIMIT_BURST", defaultRateBurst),
+		ControlPlaneRetries: intFromEnv("ENVPLANE_WEBHOOK_CONTROL_PLANE_RETRIES", 3),
+		RetryBackoff:        durationFromEnv("ENVPLANE_WEBHOOK_RETRY_BACKOFF", 100*time.Millisecond),
 	}
 }
 
@@ -117,6 +121,12 @@ func (c Config) Validate() error {
 	if c.RateLimitBurst <= 0 {
 		return fmt.Errorf("webhook rate limit burst must be positive")
 	}
+	if c.ControlPlaneRetries <= 0 {
+		return fmt.Errorf("control-plane retry count must be positive")
+	}
+	if c.RetryBackoff < 0 {
+		return fmt.Errorf("webhook retry backoff must not be negative")
+	}
 	return nil
 }
 
@@ -146,6 +156,12 @@ func New(cfg Config, client *http.Client, logger *slog.Logger) (*Server, error) 
 	}
 	if cfg.RateLimitBurst == 0 {
 		cfg.RateLimitBurst = defaultRateBurst
+	}
+	if cfg.ControlPlaneRetries == 0 {
+		cfg.ControlPlaneRetries = 3
+	}
+	if cfg.RetryBackoff == 0 {
+		cfg.RetryBackoff = 100 * time.Millisecond
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -492,6 +508,51 @@ func (s *Server) rejectGitLabToken(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusUnauthorized, errors.New("invalid webhook token"))
 }
 
+func (s *Server) doControlPlaneRequest(ctx context.Context, endpoint string, payload []byte, headers map[string]string) (*http.Response, error) {
+	for attempt := 0; attempt < s.cfg.ControlPlaneRetries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+		response, err := s.client.Do(req)
+		if err == nil && !retryableControlPlaneStatus(response.StatusCode) {
+			return response, nil
+		}
+		if attempt+1 == s.cfg.ControlPlaneRetries {
+			return response, err
+		}
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		if err := waitForRetry(ctx, s.cfg.RetryBackoff, attempt); err != nil {
+			return nil, err
+		}
+	}
+	return nil, errors.New("control-plane retry loop exhausted")
+}
+
+func retryableControlPlaneStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
+}
+
+func waitForRetry(ctx context.Context, base time.Duration, attempt int) error {
+	delay := base
+	for index := 0; index < attempt; index++ {
+		delay *= 2
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // The control-plane jobs API must deduplicate requests by Idempotency-Key and
 // return the original result for repeated keys. This protects retries after a
 // response is lost between the two services.
@@ -505,17 +566,13 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRe
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.ControlPlaneURL+"/api/v1/jobs", bytes.NewReader(payload))
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+s.cfg.ControlPlaneToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-EnvPlane-Webhook-Provider", string(event.Provider))
-	req.Header.Set("Idempotency-Key", strings.TrimSpace(event.EventID))
-	response, err := s.client.Do(req)
+	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+"/api/v1/jobs", payload, map[string]string{
+		"Authorization":               "Bearer " + s.cfg.ControlPlaneToken,
+		"Content-Type":                "application/json",
+		"Accept":                      "application/json",
+		"X-EnvPlane-Webhook-Provider": string(event.Provider),
+		"Idempotency-Key":             strings.TrimSpace(event.EventID),
+	})
 	if err != nil {
 		s.logger.Error("control-plane job submission failed", "provider", event.Provider, "event_id", event.EventID, "error", err)
 		writeError(w, http.StatusBadGateway, errors.New("control-plane is unavailable"))
@@ -590,15 +647,11 @@ func (s *Server) submitCommand(w http.ResponseWriter, r *http.Request, command s
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.ControlPlaneURL+"/api/v1/jobs/commands", bytes.NewReader(payload))
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+s.cfg.ControlPlaneToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", strings.TrimSpace(command.EventID))
-	response, err := s.client.Do(req)
+	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+"/api/v1/jobs/commands", payload, map[string]string{
+		"Authorization":   "Bearer " + s.cfg.ControlPlaneToken,
+		"Content-Type":    "application/json",
+		"Idempotency-Key": strings.TrimSpace(command.EventID),
+	})
 	if err != nil {
 		s.logger.Error("control-plane command submission failed", "provider", command.Provider, "event_id", command.EventID, "error", err)
 		writeError(w, http.StatusBadGateway, errors.New("control-plane is unavailable"))
