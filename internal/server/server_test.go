@@ -2,10 +2,12 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -140,6 +142,40 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	}
 }
 
+func TestGitLabWebhookRejectsTokenForAnotherProject(t *testing.T) {
+	var submissions atomic.Int32
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		submissions.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer controlPlane.Close()
+	application, err := New(Config{
+		Addr:              ":8080",
+		ControlPlaneURL:   controlPlane.URL,
+		ControlPlaneToken: "control-plane-token",
+		GitLabTokenResolver: func(_ context.Context, projectID, _ string) (string, error) {
+			if projectID != "project-a" {
+				return "", errors.New("unknown project")
+			}
+			return "token-a", nil
+		},
+		RequestTimeout: time.Second,
+	}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"object_kind":"merge_request","user":{"username":"alice"},"project":{"id":42,"path_with_namespace":"tenant-b/repo"},"object_attributes":{"iid":7,"action":"open","state":"opened","source_branch":"feature/7","last_commit":{"id":"def7"}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
+	req.Header.Set("X-Gitlab-Event", "Merge Request Hook")
+	req.Header.Set("X-Gitlab-Token", "token-a")
+	rec := httptest.NewRecorder()
+	application.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized || submissions.Load() != 0 {
+		t.Fatalf("response=%d submissions=%d body=%s", rec.Code, submissions.Load(), rec.Body.String())
+	}
+}
+
 func TestConfigRequiresControlPlaneCredentialsAndProviderSecret(t *testing.T) {
 	tests := []Config{
 		{Addr: ":8080", ControlPlaneToken: "token", GitHubWebhookSecret: "secret", RequestTimeout: time.Second},
@@ -160,8 +196,13 @@ func newTestServer(t *testing.T, controlPlaneURL string) *Server {
 		ControlPlaneURL:     controlPlaneURL,
 		ControlPlaneToken:   "control-plane-token",
 		GitHubWebhookSecret: "github-secret",
-		GitLabWebhookToken:  "gitlab-token",
-		RequestTimeout:      time.Second,
+		GitLabTokenResolver: func(_ context.Context, projectID, _ string) (string, error) {
+			if projectID != "9" {
+				return "", errors.New("unknown project")
+			}
+			return "gitlab-token", nil
+		},
+		RequestTimeout: time.Second,
 	}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)

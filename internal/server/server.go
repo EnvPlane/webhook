@@ -29,20 +29,43 @@ type Config struct {
 	ControlPlaneURL     string
 	ControlPlaneToken   string
 	GitHubWebhookSecret string
-	GitLabWebhookToken  string
+	GitLabTokenResolver func(context.Context, string, string) (string, error)
 	RequestTimeout      time.Duration
 	ReadyStaleAfter     time.Duration
 }
 
 func ConfigFromEnv() Config {
+	gitLabResolver := gitLabTokenResolverFromEnv()
 	return Config{
 		Addr:                envOrDefault("ENVPLANE_WEBHOOK_ADDR", ":8080"),
 		ControlPlaneURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_URL")), "/"),
 		ControlPlaneToken:   strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_TOKEN")),
 		GitHubWebhookSecret: strings.TrimSpace(os.Getenv("ENVPLANE_GITHUB_WEBHOOK_SECRET")),
-		GitLabWebhookToken:  strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_WEBHOOK_TOKEN")),
+		GitLabTokenResolver: gitLabResolver,
 		RequestTimeout:      durationFromEnv("ENVPLANE_WEBHOOK_REQUEST_TIMEOUT", 10*time.Second),
 		ReadyStaleAfter:     durationFromEnv("ENVPLANE_WEBHOOK_READY_STALE_AFTER", 2*time.Minute),
+	}
+}
+
+func gitLabTokenResolverFromEnv() func(context.Context, string, string) (string, error) {
+	raw := strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_WEBHOOK_TOKENS"))
+	if raw == "" {
+		return nil
+	}
+	var tokens map[string]string
+	if err := json.Unmarshal([]byte(raw), &tokens); err != nil {
+		return func(context.Context, string, string) (string, error) {
+			return "", fmt.Errorf("parse ENVPLANE_GITLAB_WEBHOOK_TOKENS: %w", err)
+		}
+	}
+	return func(_ context.Context, projectID, projectPath string) (string, error) {
+		if token := strings.TrimSpace(tokens[projectID]); token != "" {
+			return token, nil
+		}
+		if token := strings.TrimSpace(tokens[projectPath]); token != "" {
+			return token, nil
+		}
+		return "", errors.New("GitLab project token is not configured")
 	}
 }
 
@@ -59,8 +82,11 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.ControlPlaneToken) == "" {
 		return fmt.Errorf("ENVPLANE_CONTROL_PLANE_TOKEN is required")
 	}
-	if strings.TrimSpace(c.GitHubWebhookSecret) == "" && strings.TrimSpace(c.GitLabWebhookToken) == "" {
+	if strings.TrimSpace(c.GitHubWebhookSecret) == "" && c.GitLabTokenResolver == nil {
 		return fmt.Errorf("configure at least one webhook provider secret")
+	}
+	if c.GitLabTokenResolver == nil && strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_WEBHOOK_TOKEN")) != "" {
+		return fmt.Errorf("ENVPLANE_GITLAB_WEBHOOK_TOKENS must configure per-project GitLab secrets")
 	}
 	if c.RequestTimeout <= 0 {
 		return fmt.Errorf("webhook request timeout must be positive")
@@ -212,13 +238,6 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
-	provider := string(scm.ProviderGitLab)
-	if !validGitLabToken(s.cfg.GitLabWebhookToken, r.Header.Get("X-Gitlab-Token")) {
-		s.recordDelivery(provider, "invalid_signature")
-		s.logRejection(r, provider, "invalid_signature", "")
-		writeError(w, http.StatusUnauthorized, errors.New("invalid webhook token"))
-		return
-	}
 	eventType := strings.TrimSpace(r.Header.Get("X-Gitlab-Event"))
 	if eventType == "Note Hook" {
 		body, err := readBody(w, r)
@@ -229,6 +248,10 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		command, err := scm.ParseGitLabPRCommand(body)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !s.validGitLabRequest(r, command.InstallationID, command.Repo) {
+			s.rejectGitLabToken(w, r)
 			return
 		}
 		command.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Event-UUID"))
@@ -261,6 +284,10 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if !s.validGitLabRequest(r, event.InstallationID, event.Repo) {
+		s.rejectGitLabToken(w, r)
+		return
+	}
 	event.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Event-UUID"))
 	if event.EventID == "" {
 		event.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Delivery"))
@@ -274,6 +301,24 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.submit(w, r, event)
+}
+
+func (s *Server) validGitLabRequest(r *http.Request, projectID, projectPath string) bool {
+	if s.cfg.GitLabTokenResolver == nil {
+		return false
+	}
+	want, err := s.cfg.GitLabTokenResolver(r.Context(), strings.TrimSpace(projectID), strings.TrimSpace(projectPath))
+	if err != nil {
+		s.logger.Warn("GitLab webhook token resolution failed", "project_id", projectID, "error", err)
+		return false
+	}
+	return validGitLabToken(want, r.Header.Get("X-Gitlab-Token"))
+}
+
+func (s *Server) rejectGitLabToken(w http.ResponseWriter, r *http.Request) {
+	s.recordDelivery(string(scm.ProviderGitLab), "invalid_signature")
+	s.logRejection(r, string(scm.ProviderGitLab), "invalid_signature", strings.TrimSpace(r.Header.Get("X-Gitlab-Event")))
+	writeError(w, http.StatusUnauthorized, errors.New("invalid webhook token"))
 }
 
 func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRequestEvent) {
