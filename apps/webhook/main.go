@@ -13,6 +13,26 @@ import (
 	webhookserver "github.com/envplane/webhook/internal/server"
 )
 
+const (
+	readHeaderTimeout = 5 * time.Second
+	timeoutGrace      = 5 * time.Second
+	idleTimeout       = 120 * time.Second
+)
+
+func newHTTPServer(cfg webhookserver.Config, handler http.Handler) *http.Server {
+	// Read and write timeouts cover the request body and the synchronous control-plane
+	// call, with five seconds of processing headroom beyond the outbound request timeout.
+	processingTimeout := cfg.RequestTimeout + timeoutGrace
+	return &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       processingTimeout,
+		WriteTimeout:      processingTimeout,
+		IdleTimeout:       idleTimeout,
+	}
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg := webhookserver.ConfigFromEnv()
@@ -22,7 +42,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	server := &http.Server{Addr: cfg.Addr, Handler: application.Routes(), ReadHeaderTimeout: 5 * time.Second}
+	server := newHTTPServer(cfg, application.Routes())
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go func() {
