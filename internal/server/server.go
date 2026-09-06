@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +28,8 @@ const (
 	maxWebhookBody          = 2 << 20
 	defaultReplayTTL        = 15 * time.Minute
 	maxRememberedDeliveries = 4096
+	defaultRatePerSecond    = 30.0
+	defaultRateBurst        = 60
 )
 
 type Config struct {
@@ -37,6 +41,8 @@ type Config struct {
 	RequestTimeout      time.Duration
 	ReadyStaleAfter     time.Duration
 	ReplayTTL           time.Duration
+	RateLimitPerSecond  float64
+	RateLimitBurst      int
 }
 
 func ConfigFromEnv() Config {
@@ -50,6 +56,8 @@ func ConfigFromEnv() Config {
 		RequestTimeout:      durationFromEnv("ENVPLANE_WEBHOOK_REQUEST_TIMEOUT", 10*time.Second),
 		ReadyStaleAfter:     durationFromEnv("ENVPLANE_WEBHOOK_READY_STALE_AFTER", 2*time.Minute),
 		ReplayTTL:           durationFromEnv("ENVPLANE_WEBHOOK_REPLAY_TTL", defaultReplayTTL),
+		RateLimitPerSecond:  floatFromEnv("ENVPLANE_WEBHOOK_RATE_LIMIT_RPS", defaultRatePerSecond),
+		RateLimitBurst:      intFromEnv("ENVPLANE_WEBHOOK_RATE_LIMIT_BURST", defaultRateBurst),
 	}
 }
 
@@ -103,6 +111,12 @@ func (c Config) Validate() error {
 	if c.ReplayTTL <= 0 {
 		return fmt.Errorf("webhook replay TTL must be positive")
 	}
+	if c.RateLimitPerSecond <= 0 {
+		return fmt.Errorf("webhook rate limit must be positive")
+	}
+	if c.RateLimitBurst <= 0 {
+		return fmt.Errorf("webhook rate limit burst must be positive")
+	}
 	return nil
 }
 
@@ -117,6 +131,7 @@ type Server struct {
 	lastControlPlaneSuccess int64
 	replayMu                sync.Mutex
 	recentDeliveries        map[string]time.Time
+	limiter                 *rateLimiter
 }
 
 func New(cfg Config, client *http.Client, logger *slog.Logger) (*Server, error) {
@@ -125,6 +140,12 @@ func New(cfg Config, client *http.Client, logger *slog.Logger) (*Server, error) 
 	}
 	if cfg.ReplayTTL == 0 {
 		cfg.ReplayTTL = defaultReplayTTL
+	}
+	if cfg.RateLimitPerSecond == 0 {
+		cfg.RateLimitPerSecond = defaultRatePerSecond
+	}
+	if cfg.RateLimitBurst == 0 {
+		cfg.RateLimitBurst = defaultRateBurst
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -135,7 +156,7 @@ func New(cfg Config, client *http.Client, logger *slog.Logger) (*Server, error) 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, client: client, logger: logger, deliveries: map[string]uint64{}, recentDeliveries: map[string]time.Time{}}, nil
+	return &Server{cfg: cfg, client: client, logger: logger, deliveries: map[string]uint64{}, recentDeliveries: map[string]time.Time{}, limiter: newRateLimiter(cfg.RateLimitPerSecond, cfg.RateLimitBurst)}, nil
 }
 
 func (s *Server) Routes() http.Handler {
@@ -144,10 +165,82 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /livez", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /metrics", s.metrics)
-	mux.HandleFunc("POST /api/v1/webhooks/github", s.githubWebhook)
-	mux.HandleFunc("POST /webhook/github", s.githubWebhook)
-	mux.HandleFunc("POST /api/v1/webhooks/gitlab", s.gitlabWebhook)
+	mux.Handle("POST /api/v1/webhooks/github", s.rateLimit(http.HandlerFunc(s.githubWebhook)))
+	mux.Handle("POST /webhook/github", s.rateLimit(http.HandlerFunc(s.githubWebhook)))
+	mux.Handle("POST /api/v1/webhooks/gitlab", s.rateLimit(http.HandlerFunc(s.gitlabWebhook)))
 	return mux
+}
+
+func (s *Server) rateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.limiter.allow(clientIP(r)) {
+			s.recordDelivery("webhook", "rate_limited")
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusTooManyRequests, errors.New("webhook rate limit exceeded"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func clientIP(r *http.Request) string {
+	remote := strings.TrimSpace(r.RemoteAddr)
+	if host, _, err := net.SplitHostPort(remote); err == nil {
+		return host
+	}
+	return remote
+}
+
+type rateLimiter struct {
+	mu      sync.Mutex
+	rate    float64
+	burst   float64
+	buckets map[string]rateBucket
+}
+
+type rateBucket struct {
+	tokens float64
+	last   time.Time
+}
+
+func newRateLimiter(rate float64, burst int) *rateLimiter {
+	return &rateLimiter{rate: rate, burst: float64(burst), buckets: make(map[string]rateBucket)}
+}
+
+func (l *rateLimiter) allow(key string) bool {
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	bucket, ok := l.buckets[key]
+	if !ok {
+		if len(l.buckets) >= maxRememberedDeliveries {
+			var oldestKey string
+			var oldest time.Time
+			for candidate, candidateBucket := range l.buckets {
+				if oldestKey == "" || candidateBucket.last.Before(oldest) {
+					oldestKey, oldest = candidate, candidateBucket.last
+				}
+			}
+			delete(l.buckets, oldestKey)
+		}
+		bucket = rateBucket{tokens: l.burst, last: now}
+	}
+	bucket.tokens = minFloat(l.burst, bucket.tokens+now.Sub(bucket.last).Seconds()*l.rate)
+	bucket.last = now
+	if bucket.tokens < 1 {
+		l.buckets[key] = bucket
+		return false
+	}
+	bucket.tokens--
+	l.buckets[key] = bucket
+	return true
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -597,4 +690,28 @@ func durationFromEnv(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return duration
+}
+
+func floatFromEnv(key string, fallback float64) float64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func intFromEnv(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

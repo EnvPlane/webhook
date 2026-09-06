@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -99,6 +100,49 @@ func TestGitHubWebhookRejectsInvalidSignatureWithoutSubmission(t *testing.T) {
 	application.Routes().ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if ready.Code != http.StatusServiceUnavailable {
 		t.Fatalf("readyz before successful forward = %d", ready.Code)
+	}
+}
+
+func TestWebhookRateLimitRejectsExcessRequests(t *testing.T) {
+	var submissions atomic.Int32
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		submissions.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"id":"job"}`)
+	}))
+	defer controlPlane.Close()
+	application, err := New(Config{
+		Addr:                ":8080",
+		ControlPlaneURL:     controlPlane.URL,
+		ControlPlaneToken:   "control-plane-token",
+		GitHubWebhookSecret: "github-secret",
+		RequestTimeout:      time.Second,
+		ReadyStaleAfter:     time.Second,
+		ReplayTTL:           time.Minute,
+		RateLimitPerSecond:  0.01,
+		RateLimitBurst:      2,
+	}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"action":"opened","number":42,"pull_request":{"number":42,"html_url":"https://github.com/owner/repo/pull/42","draft":false,"head":{"ref":"feature/42","sha":"abc42"},"user":{"login":"octocat"},"labels":[]},"repository":{"full_name":"owner/repo"}}`)
+	for index := 0; index < 3; index++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", bytes.NewReader(body))
+		req.Header.Set("X-GitHub-Event", "pull_request")
+		req.Header.Set("X-GitHub-Delivery", fmt.Sprintf("rate-limit-%d", index))
+		req.Header.Set("X-Hub-Signature-256", githubSignature("github-secret", body))
+		rec := httptest.NewRecorder()
+		application.Routes().ServeHTTP(rec, req)
+		want := http.StatusOK
+		if index == 2 {
+			want = http.StatusTooManyRequests
+		}
+		if rec.Code != want {
+			t.Fatalf("request %d response=%d body=%s", index, rec.Code, rec.Body.String())
+		}
+	}
+	if submissions.Load() != 2 {
+		t.Fatalf("control-plane submissions=%d, want 2", submissions.Load())
 	}
 }
 
