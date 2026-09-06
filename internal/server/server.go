@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,27 +24,66 @@ import (
 	"github.com/envplane/webhook/internal/scm"
 )
 
-const maxWebhookBody = 2 << 20
+const (
+	maxWebhookBody          = 2 << 20
+	defaultReplayTTL        = 15 * time.Minute
+	maxRememberedDeliveries = 4096
+	defaultRatePerSecond    = 30.0
+	defaultRateBurst        = 60
+)
 
 type Config struct {
 	Addr                string
 	ControlPlaneURL     string
 	ControlPlaneToken   string
 	GitHubWebhookSecret string
-	GitLabWebhookToken  string
+	GitLabTokenResolver func(context.Context, string, string) (string, error)
 	RequestTimeout      time.Duration
 	ReadyStaleAfter     time.Duration
+	ReplayTTL           time.Duration
+	RateLimitPerSecond  float64
+	RateLimitBurst      int
+	ControlPlaneRetries int
+	RetryBackoff        time.Duration
 }
 
 func ConfigFromEnv() Config {
+	gitLabResolver := gitLabTokenResolverFromEnv()
 	return Config{
 		Addr:                envOrDefault("ENVPLANE_WEBHOOK_ADDR", ":8080"),
 		ControlPlaneURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_URL")), "/"),
 		ControlPlaneToken:   strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_TOKEN")),
 		GitHubWebhookSecret: strings.TrimSpace(os.Getenv("ENVPLANE_GITHUB_WEBHOOK_SECRET")),
-		GitLabWebhookToken:  strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_WEBHOOK_TOKEN")),
+		GitLabTokenResolver: gitLabResolver,
 		RequestTimeout:      durationFromEnv("ENVPLANE_WEBHOOK_REQUEST_TIMEOUT", 10*time.Second),
 		ReadyStaleAfter:     durationFromEnv("ENVPLANE_WEBHOOK_READY_STALE_AFTER", 2*time.Minute),
+		ReplayTTL:           durationFromEnv("ENVPLANE_WEBHOOK_REPLAY_TTL", defaultReplayTTL),
+		RateLimitPerSecond:  floatFromEnv("ENVPLANE_WEBHOOK_RATE_LIMIT_RPS", defaultRatePerSecond),
+		RateLimitBurst:      intFromEnv("ENVPLANE_WEBHOOK_RATE_LIMIT_BURST", defaultRateBurst),
+		ControlPlaneRetries: intFromEnv("ENVPLANE_WEBHOOK_CONTROL_PLANE_RETRIES", 3),
+		RetryBackoff:        durationFromEnv("ENVPLANE_WEBHOOK_RETRY_BACKOFF", 100*time.Millisecond),
+	}
+}
+
+func gitLabTokenResolverFromEnv() func(context.Context, string, string) (string, error) {
+	raw := strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_WEBHOOK_TOKENS"))
+	if raw == "" {
+		return nil
+	}
+	var tokens map[string]string
+	if err := json.Unmarshal([]byte(raw), &tokens); err != nil {
+		return func(context.Context, string, string) (string, error) {
+			return "", fmt.Errorf("parse ENVPLANE_GITLAB_WEBHOOK_TOKENS: %w", err)
+		}
+	}
+	return func(_ context.Context, projectID, projectPath string) (string, error) {
+		if token := strings.TrimSpace(tokens[projectID]); token != "" {
+			return token, nil
+		}
+		if token := strings.TrimSpace(tokens[projectPath]); token != "" {
+			return token, nil
+		}
+		return "", errors.New("GitLab project token is not configured")
 	}
 }
 
@@ -59,14 +100,32 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.ControlPlaneToken) == "" {
 		return fmt.Errorf("ENVPLANE_CONTROL_PLANE_TOKEN is required")
 	}
-	if strings.TrimSpace(c.GitHubWebhookSecret) == "" && strings.TrimSpace(c.GitLabWebhookToken) == "" {
+	if strings.TrimSpace(c.GitHubWebhookSecret) == "" && c.GitLabTokenResolver == nil {
 		return fmt.Errorf("configure at least one webhook provider secret")
+	}
+	if c.GitLabTokenResolver == nil && strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_WEBHOOK_TOKEN")) != "" {
+		return fmt.Errorf("ENVPLANE_GITLAB_WEBHOOK_TOKENS must configure per-project GitLab secrets")
 	}
 	if c.RequestTimeout <= 0 {
 		return fmt.Errorf("webhook request timeout must be positive")
 	}
 	if c.ReadyStaleAfter <= 0 {
 		return fmt.Errorf("webhook readiness stale threshold must be positive")
+	}
+	if c.ReplayTTL <= 0 {
+		return fmt.Errorf("webhook replay TTL must be positive")
+	}
+	if c.RateLimitPerSecond <= 0 {
+		return fmt.Errorf("webhook rate limit must be positive")
+	}
+	if c.RateLimitBurst <= 0 {
+		return fmt.Errorf("webhook rate limit burst must be positive")
+	}
+	if c.ControlPlaneRetries <= 0 {
+		return fmt.Errorf("control-plane retry count must be positive")
+	}
+	if c.RetryBackoff < 0 {
+		return fmt.Errorf("webhook retry backoff must not be negative")
 	}
 	return nil
 }
@@ -80,11 +139,29 @@ type Server struct {
 	forwardCount            uint64
 	forwardSeconds          float64
 	lastControlPlaneSuccess int64
+	replayMu                sync.Mutex
+	recentDeliveries        map[string]time.Time
+	limiter                 *rateLimiter
 }
 
 func New(cfg Config, client *http.Client, logger *slog.Logger) (*Server, error) {
 	if cfg.ReadyStaleAfter == 0 {
 		cfg.ReadyStaleAfter = 2 * time.Minute
+	}
+	if cfg.ReplayTTL == 0 {
+		cfg.ReplayTTL = defaultReplayTTL
+	}
+	if cfg.RateLimitPerSecond == 0 {
+		cfg.RateLimitPerSecond = defaultRatePerSecond
+	}
+	if cfg.RateLimitBurst == 0 {
+		cfg.RateLimitBurst = defaultRateBurst
+	}
+	if cfg.ControlPlaneRetries == 0 {
+		cfg.ControlPlaneRetries = 3
+	}
+	if cfg.RetryBackoff == 0 {
+		cfg.RetryBackoff = 100 * time.Millisecond
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -95,7 +172,7 @@ func New(cfg Config, client *http.Client, logger *slog.Logger) (*Server, error) 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, client: client, logger: logger, deliveries: map[string]uint64{}}, nil
+	return &Server{cfg: cfg, client: client, logger: logger, deliveries: map[string]uint64{}, recentDeliveries: map[string]time.Time{}, limiter: newRateLimiter(cfg.RateLimitPerSecond, cfg.RateLimitBurst)}, nil
 }
 
 func (s *Server) Routes() http.Handler {
@@ -104,10 +181,82 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /livez", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /metrics", s.metrics)
-	mux.HandleFunc("POST /api/v1/webhooks/github", s.githubWebhook)
-	mux.HandleFunc("POST /webhook/github", s.githubWebhook)
-	mux.HandleFunc("POST /api/v1/webhooks/gitlab", s.gitlabWebhook)
+	mux.Handle("POST /api/v1/webhooks/github", s.rateLimit(http.HandlerFunc(s.githubWebhook)))
+	mux.Handle("POST /webhook/github", s.rateLimit(http.HandlerFunc(s.githubWebhook)))
+	mux.Handle("POST /api/v1/webhooks/gitlab", s.rateLimit(http.HandlerFunc(s.gitlabWebhook)))
 	return mux
+}
+
+func (s *Server) rateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.limiter.allow(clientIP(r)) {
+			s.recordDelivery("webhook", "rate_limited")
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusTooManyRequests, errors.New("webhook rate limit exceeded"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func clientIP(r *http.Request) string {
+	remote := strings.TrimSpace(r.RemoteAddr)
+	if host, _, err := net.SplitHostPort(remote); err == nil {
+		return host
+	}
+	return remote
+}
+
+type rateLimiter struct {
+	mu      sync.Mutex
+	rate    float64
+	burst   float64
+	buckets map[string]rateBucket
+}
+
+type rateBucket struct {
+	tokens float64
+	last   time.Time
+}
+
+func newRateLimiter(rate float64, burst int) *rateLimiter {
+	return &rateLimiter{rate: rate, burst: float64(burst), buckets: make(map[string]rateBucket)}
+}
+
+func (l *rateLimiter) allow(key string) bool {
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	bucket, ok := l.buckets[key]
+	if !ok {
+		if len(l.buckets) >= maxRememberedDeliveries {
+			var oldestKey string
+			var oldest time.Time
+			for candidate, candidateBucket := range l.buckets {
+				if oldestKey == "" || candidateBucket.last.Before(oldest) {
+					oldestKey, oldest = candidate, candidateBucket.last
+				}
+			}
+			delete(l.buckets, oldestKey)
+		}
+		bucket = rateBucket{tokens: l.burst, last: now}
+	}
+	bucket.tokens = minFloat(l.burst, bucket.tokens+now.Sub(bucket.last).Seconds()*l.rate)
+	bucket.last = now
+	if bucket.tokens < 1 {
+		l.buckets[key] = bucket
+		return false
+	}
+	bucket.tokens--
+	l.buckets[key] = bucket
+	return true
+}
+
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -187,6 +336,15 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if err := authorizeCommand(command); err != nil {
+			s.recordDelivery(provider, "unauthorized_author")
+			s.logRejection(r, provider, "unauthorized_author", "issue_comment")
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
+		if s.rejectReplay(w, r, provider, command.EventID) {
+			return
+		}
 		s.submitCommand(w, r, command)
 		return
 	}
@@ -208,17 +366,13 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
 		return
 	}
+	if s.rejectReplay(w, r, provider, event.EventID) {
+		return
+	}
 	s.submit(w, r, event)
 }
 
 func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
-	provider := string(scm.ProviderGitLab)
-	if !validGitLabToken(s.cfg.GitLabWebhookToken, r.Header.Get("X-Gitlab-Token")) {
-		s.recordDelivery(provider, "invalid_signature")
-		s.logRejection(r, provider, "invalid_signature", "")
-		writeError(w, http.StatusUnauthorized, errors.New("invalid webhook token"))
-		return
-	}
 	eventType := strings.TrimSpace(r.Header.Get("X-Gitlab-Event"))
 	if eventType == "Note Hook" {
 		body, err := readBody(w, r)
@@ -231,9 +385,13 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if !s.validGitLabRequest(r, command.InstallationID, command.Repo) {
+			s.rejectGitLabToken(w, r)
+			return
+		}
 		command.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Event-UUID"))
 		if command.EventID == "" {
-			command.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Delivery"))
+			command.EventID = command.PullRequestEvent(scm.ActionUpdate).DeduplicationKey()
 		}
 		if command.Command == "" {
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
@@ -241,6 +399,15 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := validateCommand(command); err != nil {
 			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := authorizeCommand(command); err != nil {
+			s.recordDelivery(string(scm.ProviderGitLab), "unauthorized_author")
+			s.logRejection(r, string(scm.ProviderGitLab), "unauthorized_author", "Note Hook")
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
+		if s.rejectReplay(w, r, string(scm.ProviderGitLab), command.EventID) {
 			return
 		}
 		s.submitCommand(w, r, command)
@@ -261,9 +428,13 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if !s.validGitLabRequest(r, event.InstallationID, event.Repo) {
+		s.rejectGitLabToken(w, r)
+		return
+	}
 	event.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Event-UUID"))
 	if event.EventID == "" {
-		event.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Delivery"))
+		event.EventID = event.DeduplicationKey()
 	}
 	if event.Action == scm.ActionIgnore {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
@@ -273,9 +444,118 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if s.rejectReplay(w, r, string(scm.ProviderGitLab), event.EventID) {
+		return
+	}
 	s.submit(w, r, event)
 }
 
+// The replay cache is process-local. Multi-replica deployments need sticky routing
+// or a shared idempotency store in front of this service for cluster-wide protection.
+func (s *Server) rejectReplay(w http.ResponseWriter, r *http.Request, provider, deliveryID string) bool {
+	deliveryID = strings.TrimSpace(deliveryID)
+	if deliveryID == "" {
+		s.recordDelivery(provider, "missing_delivery_id")
+		s.logRejection(r, provider, "missing_delivery_id", r.Header.Get("X-GitHub-Event"))
+		writeError(w, http.StatusBadRequest, errors.New("webhook delivery id is required"))
+		return true
+	}
+	key := provider + "|" + deliveryID
+	now := time.Now()
+	s.replayMu.Lock()
+	for rememberedKey, seenAt := range s.recentDeliveries {
+		if now.Sub(seenAt) >= s.cfg.ReplayTTL {
+			delete(s.recentDeliveries, rememberedKey)
+		}
+	}
+	if _, exists := s.recentDeliveries[key]; exists {
+		s.replayMu.Unlock()
+		s.recordDelivery(provider, "duplicate_ignored")
+		s.logRejection(r, provider, "duplicate_delivery", r.Header.Get("X-GitHub-Event"))
+		writeJSON(w, http.StatusOK, map[string]string{"status": "duplicate_ignored"})
+		return true
+	}
+	if len(s.recentDeliveries) >= maxRememberedDeliveries {
+		var oldestKey string
+		var oldest time.Time
+		for rememberedKey, seenAt := range s.recentDeliveries {
+			if oldestKey == "" || seenAt.Before(oldest) {
+				oldestKey, oldest = rememberedKey, seenAt
+			}
+		}
+		delete(s.recentDeliveries, oldestKey)
+	}
+	s.recentDeliveries[key] = now
+	s.replayMu.Unlock()
+	return false
+}
+
+func (s *Server) validGitLabRequest(r *http.Request, projectID, projectPath string) bool {
+	if s.cfg.GitLabTokenResolver == nil {
+		return false
+	}
+	want, err := s.cfg.GitLabTokenResolver(r.Context(), strings.TrimSpace(projectID), strings.TrimSpace(projectPath))
+	if err != nil {
+		s.logger.Warn("GitLab webhook token resolution failed", "project_id", projectID, "error", err)
+		return false
+	}
+	return validGitLabToken(want, r.Header.Get("X-Gitlab-Token"))
+}
+
+func (s *Server) rejectGitLabToken(w http.ResponseWriter, r *http.Request) {
+	s.recordDelivery(string(scm.ProviderGitLab), "invalid_signature")
+	s.logRejection(r, string(scm.ProviderGitLab), "invalid_signature", strings.TrimSpace(r.Header.Get("X-Gitlab-Event")))
+	writeError(w, http.StatusUnauthorized, errors.New("invalid webhook token"))
+}
+
+func (s *Server) doControlPlaneRequest(ctx context.Context, endpoint string, payload []byte, headers map[string]string) (*http.Response, error) {
+	for attempt := 0; attempt < s.cfg.ControlPlaneRetries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+		response, err := s.client.Do(req)
+		if err == nil && !retryableControlPlaneStatus(response.StatusCode) {
+			return response, nil
+		}
+		if attempt+1 == s.cfg.ControlPlaneRetries {
+			return response, err
+		}
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		if err := waitForRetry(ctx, s.cfg.RetryBackoff, attempt); err != nil {
+			return nil, err
+		}
+	}
+	return nil, errors.New("control-plane retry loop exhausted")
+}
+
+func retryableControlPlaneStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
+}
+
+func waitForRetry(ctx context.Context, base time.Duration, attempt int) error {
+	delay := base
+	for index := 0; index < attempt; index++ {
+		delay *= 2
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// The control-plane jobs API must deduplicate requests by Idempotency-Key and
+// return the original result for repeated keys. This protects retries after a
+// response is lost between the two services.
 func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRequestEvent) {
 	started := time.Now()
 	payload, err := json.Marshal(event)
@@ -286,16 +566,13 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRe
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.ControlPlaneURL+"/api/v1/jobs", bytes.NewReader(payload))
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+s.cfg.ControlPlaneToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-EnvPlane-Webhook-Provider", string(event.Provider))
-	response, err := s.client.Do(req)
+	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+"/api/v1/jobs", payload, map[string]string{
+		"Authorization":               "Bearer " + s.cfg.ControlPlaneToken,
+		"Content-Type":                "application/json",
+		"Accept":                      "application/json",
+		"X-EnvPlane-Webhook-Provider": string(event.Provider),
+		"Idempotency-Key":             strings.TrimSpace(event.EventID),
+	})
 	if err != nil {
 		s.logger.Error("control-plane job submission failed", "provider", event.Provider, "event_id", event.EventID, "error", err)
 		writeError(w, http.StatusBadGateway, errors.New("control-plane is unavailable"))
@@ -339,6 +616,27 @@ func validateCommand(command scm.PullRequestCommand) error {
 	return nil
 }
 
+func authorizeCommand(command scm.PullRequestCommand) error {
+	switch command.Provider {
+	case scm.ProviderGitHub:
+		switch strings.ToUpper(strings.TrimSpace(command.AuthorAssociation)) {
+		case "OWNER", "MEMBER", "COLLABORATOR":
+			return nil
+		default:
+			return errors.New("webhook command author is not authorized")
+		}
+	case scm.ProviderGitLab:
+		if command.AuthorAccessLevel >= 30 && strings.TrimSpace(command.AuthorID) != "" {
+			return nil
+		}
+		return errors.New("webhook command author is not authorized")
+	default:
+		return errors.New("webhook command provider is not authorized")
+	}
+}
+
+// The control-plane commands API shares the same Idempotency-Key contract as
+// the jobs API and must not create a second job for a repeated delivery.
 func (s *Server) submitCommand(w http.ResponseWriter, r *http.Request, command scm.PullRequestCommand) {
 	started := time.Now()
 	payload, err := json.Marshal(command)
@@ -349,14 +647,11 @@ func (s *Server) submitCommand(w http.ResponseWriter, r *http.Request, command s
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.ControlPlaneURL+"/api/v1/jobs/commands", bytes.NewReader(payload))
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+s.cfg.ControlPlaneToken)
-	req.Header.Set("Content-Type", "application/json")
-	response, err := s.client.Do(req)
+	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+"/api/v1/jobs/commands", payload, map[string]string{
+		"Authorization":   "Bearer " + s.cfg.ControlPlaneToken,
+		"Content-Type":    "application/json",
+		"Idempotency-Key": strings.TrimSpace(command.EventID),
+	})
 	if err != nil {
 		s.logger.Error("control-plane command submission failed", "provider", command.Provider, "event_id", command.EventID, "error", err)
 		writeError(w, http.StatusBadGateway, errors.New("control-plane is unavailable"))
@@ -407,10 +702,12 @@ func validGitHubSignature(secret, signature string, body []byte) bool {
 
 func validGitLabToken(want, got string) bool {
 	want = strings.TrimSpace(want)
-	if want == "" || len(want) != len(got) {
+	if want == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
+	wantDigest := sha256.Sum256([]byte(want))
+	gotDigest := sha256.Sum256([]byte(got))
+	return subtle.ConstantTimeCompare(wantDigest[:], gotDigest[:]) == 1
 }
 
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
@@ -448,4 +745,28 @@ func durationFromEnv(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return duration
+}
+
+func floatFromEnv(key string, fallback float64) float64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func intFromEnv(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
