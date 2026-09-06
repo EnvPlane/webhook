@@ -222,7 +222,7 @@ func TestParseGitLabPRCommand(t *testing.T) {
 	if command.Provider != ProviderGitLab {
 		t.Fatalf("provider = %q", command.Provider)
 	}
-	if command.AuthorID != "77" || command.AuthorAccessLevel != 30 {
+	if command.AuthorID != "77" || command.AuthorAccessLevel != 0 {
 		t.Fatalf("author identity = id %q access level %d", command.AuthorID, command.AuthorAccessLevel)
 	}
 	if command.Command != CommandDestroy {
@@ -248,18 +248,13 @@ func TestParseGitHubPRCommandCapturesAuthorAssociation(t *testing.T) {
 	}
 }
 
-func TestParseGitLabPRCommandCapturesAuthorAccess(t *testing.T) {
-	for _, accessLevel := range []int{10, 30} {
-		t.Run(fmt.Sprint(accessLevel), func(t *testing.T) {
-			body := strings.Replace(gitlabNotePayload("/envplane destroy"), `"access_level": 30`, fmt.Sprintf(`"access_level": %d`, accessLevel), 1)
-			command, err := ParseGitLabPRCommand([]byte(body))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if command.AuthorID != "77" || command.AuthorAccessLevel != accessLevel {
-				t.Fatalf("author identity = id %q access level %d", command.AuthorID, command.AuthorAccessLevel)
-			}
-		})
+func TestParseGitLabPRCommandDoesNotInferAuthorAccessFromNotePayload(t *testing.T) {
+	command, err := ParseGitLabPRCommand([]byte(gitlabNotePayload("/envplane destroy")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.AuthorID != "77" || command.AuthorAccessLevel != 0 {
+		t.Fatalf("author identity = id %q access level %d", command.AuthorID, command.AuthorAccessLevel)
 	}
 }
 
@@ -439,8 +434,7 @@ func gitlabPayloadWithDraft(action string, state string, branch string, sha stri
   "user": {
     "id": 77,
     "name": "Alex",
-    "username": "alex",
-    "access_level": 30
+    "username": "alex"
   },
   "project": {
     "path_with_namespace": "group/repo",

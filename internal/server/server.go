@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -33,35 +34,79 @@ const (
 )
 
 type Config struct {
-	Addr                string
-	ControlPlaneURL     string
-	ControlPlaneToken   string
-	GitHubWebhookSecret string
-	GitLabTokenResolver func(context.Context, string, string) (string, error)
-	RequestTimeout      time.Duration
-	ReadyStaleAfter     time.Duration
-	ReplayTTL           time.Duration
-	RateLimitPerSecond  float64
-	RateLimitBurst      int
-	ControlPlaneRetries int
-	RetryBackoff        time.Duration
+	Addr                       string
+	ControlPlaneURL            string
+	ControlPlaneToken          string
+	GitHubWebhookSecret        string
+	GitLabTokenResolver        func(context.Context, string, string) (string, error)
+	GitLabMemberAccessResolver func(context.Context, string, string) (int, error)
+	GitLabAPIURL               string
+	GitLabAPIToken             string
+	RequestTimeout             time.Duration
+	ReadyStaleAfter            time.Duration
+	ReplayTTL                  time.Duration
+	RateLimitPerSecond         float64
+	RateLimitBurst             int
+	ControlPlaneRetries        int
+	RetryBackoff               time.Duration
 }
 
 func ConfigFromEnv() Config {
 	gitLabResolver := gitLabTokenResolverFromEnv()
+	gitLabMemberResolver := gitLabMemberAccessResolverFromEnv()
 	return Config{
-		Addr:                envOrDefault("ENVPLANE_WEBHOOK_ADDR", ":8080"),
-		ControlPlaneURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_URL")), "/"),
-		ControlPlaneToken:   strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_TOKEN")),
-		GitHubWebhookSecret: strings.TrimSpace(os.Getenv("ENVPLANE_GITHUB_WEBHOOK_SECRET")),
-		GitLabTokenResolver: gitLabResolver,
-		RequestTimeout:      durationFromEnv("ENVPLANE_WEBHOOK_REQUEST_TIMEOUT", 10*time.Second),
-		ReadyStaleAfter:     durationFromEnv("ENVPLANE_WEBHOOK_READY_STALE_AFTER", 2*time.Minute),
-		ReplayTTL:           durationFromEnv("ENVPLANE_WEBHOOK_REPLAY_TTL", defaultReplayTTL),
-		RateLimitPerSecond:  floatFromEnv("ENVPLANE_WEBHOOK_RATE_LIMIT_RPS", defaultRatePerSecond),
-		RateLimitBurst:      intFromEnv("ENVPLANE_WEBHOOK_RATE_LIMIT_BURST", defaultRateBurst),
-		ControlPlaneRetries: intFromEnv("ENVPLANE_WEBHOOK_CONTROL_PLANE_RETRIES", 3),
-		RetryBackoff:        durationFromEnv("ENVPLANE_WEBHOOK_RETRY_BACKOFF", 100*time.Millisecond),
+		Addr:                       envOrDefault("ENVPLANE_WEBHOOK_ADDR", ":8080"),
+		ControlPlaneURL:            strings.TrimRight(strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_URL")), "/"),
+		ControlPlaneToken:          strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_TOKEN")),
+		GitHubWebhookSecret:        strings.TrimSpace(os.Getenv("ENVPLANE_GITHUB_WEBHOOK_SECRET")),
+		GitLabTokenResolver:        gitLabResolver,
+		GitLabMemberAccessResolver: gitLabMemberResolver,
+		GitLabAPIURL:               envOrDefault("ENVPLANE_GITLAB_API_URL", "https://gitlab.com/api/v4"),
+		GitLabAPIToken:             strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_API_TOKEN")),
+		RequestTimeout:             durationFromEnv("ENVPLANE_WEBHOOK_REQUEST_TIMEOUT", 10*time.Second),
+		ReadyStaleAfter:            durationFromEnv("ENVPLANE_WEBHOOK_READY_STALE_AFTER", 2*time.Minute),
+		ReplayTTL:                  durationFromEnv("ENVPLANE_WEBHOOK_REPLAY_TTL", defaultReplayTTL),
+		RateLimitPerSecond:         floatFromEnv("ENVPLANE_WEBHOOK_RATE_LIMIT_RPS", defaultRatePerSecond),
+		RateLimitBurst:             intFromEnv("ENVPLANE_WEBHOOK_RATE_LIMIT_BURST", defaultRateBurst),
+		ControlPlaneRetries:        intFromEnv("ENVPLANE_WEBHOOK_CONTROL_PLANE_RETRIES", 3),
+		RetryBackoff:               durationFromEnv("ENVPLANE_WEBHOOK_RETRY_BACKOFF", 100*time.Millisecond),
+	}
+}
+
+func gitLabMemberAccessResolverFromEnv() func(context.Context, string, string) (int, error) {
+	token := strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_API_TOKEN"))
+	if token == "" {
+		return nil
+	}
+	baseURL := strings.TrimRight(envOrDefault("ENVPLANE_GITLAB_API_URL", "https://gitlab.com/api/v4"), "/")
+	return func(ctx context.Context, projectID, userID string) (int, error) {
+		if strings.TrimSpace(projectID) == "" || strings.TrimSpace(userID) == "" {
+			return 0, errors.New("GitLab project and user IDs are required for membership lookup")
+		}
+		endpoint := baseURL + "/projects/" + url.PathEscape(projectID) + "/members/all/" + url.PathEscape(userID)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return 0, err
+		}
+		req.Header.Set("PRIVATE-TOKEN", token)
+		response, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+		if err != nil {
+			return 0, err
+		}
+		defer response.Body.Close()
+		if response.StatusCode == http.StatusNotFound {
+			return 0, nil
+		}
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			return 0, fmt.Errorf("GitLab membership lookup returned HTTP %d", response.StatusCode)
+		}
+		var member struct {
+			AccessLevel int `json:"access_level"`
+		}
+		if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&member); err != nil {
+			return 0, fmt.Errorf("decode GitLab membership response: %w", err)
+		}
+		return member.AccessLevel, nil
 	}
 }
 
@@ -401,6 +446,19 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if s.cfg.GitLabMemberAccessResolver == nil {
+			s.recordDelivery(string(scm.ProviderGitLab), "author_membership_unavailable")
+			writeError(w, http.StatusServiceUnavailable, errors.New("GitLab author membership lookup is not configured"))
+			return
+		}
+		accessLevel, lookupErr := s.cfg.GitLabMemberAccessResolver(r.Context(), command.InstallationID, command.AuthorID)
+		if lookupErr != nil {
+			s.recordDelivery(string(scm.ProviderGitLab), "author_membership_lookup_failed")
+			s.logger.Warn("GitLab author membership lookup failed", "project_id", command.InstallationID, "user_id", command.AuthorID, "error", lookupErr)
+			writeError(w, http.StatusServiceUnavailable, errors.New("GitLab author membership is unavailable"))
+			return
+		}
+		command.AuthorAccessLevel = accessLevel
 		if err := authorizeCommand(command); err != nil {
 			s.recordDelivery(string(scm.ProviderGitLab), "unauthorized_author")
 			s.logRejection(r, string(scm.ProviderGitLab), "unauthorized_author", "Note Hook")

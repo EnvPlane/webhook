@@ -272,6 +272,84 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	}
 }
 
+func TestGitLabMemberAccessResolverFromEnvUsesProjectMemberAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/projects/123/members/all/77" {
+			t.Fatalf("unexpected membership request: %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("PRIVATE-TOKEN"); got != "api-token" {
+			t.Fatalf("PRIVATE-TOKEN = %q", got)
+		}
+		_, _ = io.WriteString(w, `{"access_level":40}`)
+	}))
+	defer api.Close()
+	t.Setenv("ENVPLANE_GITLAB_API_TOKEN", "api-token")
+	t.Setenv("ENVPLANE_GITLAB_API_URL", api.URL)
+
+	resolver := gitLabMemberAccessResolverFromEnv()
+	if resolver == nil {
+		t.Fatal("expected membership resolver")
+	}
+	level, err := resolver(context.Background(), "123", "77")
+	if err != nil || level != 40 {
+		t.Fatalf("access level=%d err=%v", level, err)
+	}
+}
+
+func TestGitLabNoteHookAuthorAccessIsResolvedOutsidePayload(t *testing.T) {
+	var submissions atomic.Int32
+	accessLevel := 40
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		submissions.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"id":"job-note"}`)
+	}))
+	defer controlPlane.Close()
+
+	application, err := New(Config{
+		Addr:              ":8080",
+		ControlPlaneURL:   controlPlane.URL,
+		ControlPlaneToken: "control-plane-token",
+		GitLabTokenResolver: func(_ context.Context, projectID, _ string) (string, error) {
+			if projectID != "123" {
+				return "", errors.New("unknown project")
+			}
+			return "gitlab-token", nil
+		},
+		GitLabMemberAccessResolver: func(_ context.Context, projectID, userID string) (int, error) {
+			if projectID != "123" || userID != "77" {
+				return 0, errors.New("unexpected membership lookup")
+			}
+			return accessLevel, nil
+		},
+		RequestTimeout: time.Second,
+	}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"object_kind":"note","user":{"id":77,"name":"Alex","username":"alex"},"project":{"id":123,"path_with_namespace":"group/repo","web_url":"https://gitlab.example/group/repo"},"merge_request":{"iid":2201,"url":"https://gitlab.example/group/repo/-/merge_requests/2201"},"object_attributes":{"note":"/envplane destroy"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
+	req.Header.Set("X-Gitlab-Event", "Note Hook")
+	req.Header.Set("X-Gitlab-Token", "gitlab-token")
+	req.Header.Set("X-Gitlab-Event-UUID", "note-developer")
+	rec := httptest.NewRecorder()
+	application.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || submissions.Load() != 1 {
+		t.Fatalf("response=%d submissions=%d body=%s", rec.Code, submissions.Load(), rec.Body.String())
+	}
+
+	accessLevel = 20
+	denied := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
+	denied.Header.Set("X-Gitlab-Event", "Note Hook")
+	denied.Header.Set("X-Gitlab-Token", "gitlab-token")
+	denied.Header.Set("X-Gitlab-Event-UUID", "note-reporter")
+	deniedRec := httptest.NewRecorder()
+	application.Routes().ServeHTTP(deniedRec, denied)
+	if deniedRec.Code != http.StatusForbidden || submissions.Load() != 1 {
+		t.Fatalf("denied response=%d submissions=%d body=%s", deniedRec.Code, submissions.Load(), deniedRec.Body.String())
+	}
+}
+
 func TestGitLabWebhookRejectsTokenForAnotherProject(t *testing.T) {
 	var submissions atomic.Int32
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -358,6 +436,12 @@ func newTestServer(t *testing.T, controlPlaneURL string) *Server {
 				return "", errors.New("unknown project")
 			}
 			return "gitlab-token", nil
+		},
+		GitLabMemberAccessResolver: func(_ context.Context, _, userID string) (int, error) {
+			if userID == "" {
+				return 0, errors.New("missing user id")
+			}
+			return 30, nil
 		},
 		RequestTimeout: time.Second,
 	}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))

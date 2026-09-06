@@ -76,17 +76,16 @@ func ParseGitLabPRCommand(body []byte) (PullRequestCommand, error) {
 		author = event.User.Name
 	}
 	return PullRequestCommand{
-		Provider:          ProviderGitLab,
-		Command:           command,
-		Repo:              event.Project.PathWithNamespace,
-		ChangeID:          fmt.Sprintf("%d", event.MergeRequest.IID),
-		Author:            author,
-		AuthorID:          normalizeWebhookUserID(event.User.ID),
-		AuthorAccessLevel: gitLabAuthorAccessLevel(event),
-		URL:               event.MergeRequest.URL,
-		InstallationID:    normalizeWebhookProjectID(event.Project.ID),
-		PinDuration:       duration,
-		PinRaw:            raw,
+		Provider:       ProviderGitLab,
+		Command:        command,
+		Repo:           event.Project.PathWithNamespace,
+		ChangeID:       fmt.Sprintf("%d", event.MergeRequest.IID),
+		Author:         author,
+		AuthorID:       normalizeWebhookUserID(event.User.ID),
+		URL:            event.MergeRequest.URL,
+		InstallationID: normalizeWebhookProjectID(event.Project.ID),
+		PinDuration:    duration,
+		PinRaw:         raw,
 	}, nil
 }
 
@@ -230,17 +229,15 @@ type gitLabMergeRequestEvent struct {
 type gitLabNoteEvent struct {
 	ObjectKind       string                 `json:"object_kind"`
 	User             gitLabUser             `json:"user"`
-	UserAccessLevel  int                    `json:"user_access_level"`
 	Project          gitLabProject          `json:"project"`
 	MergeRequest     gitLabNoteMergeRequest `json:"merge_request"`
 	ObjectAttributes gitLabNoteAttributes   `json:"object_attributes"`
 }
 
 type gitLabUser struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	Username    string `json:"username"`
-	AccessLevel int    `json:"access_level"`
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Username string `json:"username"`
 }
 
 type gitLabProject struct {
@@ -383,13 +380,6 @@ func normalizeWebhookUserID(value int64) string {
 		return ""
 	}
 	return strconv.FormatInt(value, 10)
-}
-
-func gitLabAuthorAccessLevel(event gitLabNoteEvent) int {
-	if event.User.AccessLevel > 0 {
-		return event.User.AccessLevel
-	}
-	return event.UserAccessLevel
 }
 
 func normalizeWebhookProjectID(value int64) string {
