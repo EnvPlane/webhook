@@ -189,6 +189,33 @@ func TestConfigRequiresControlPlaneCredentialsAndProviderSecret(t *testing.T) {
 	}
 }
 
+func TestConfigRejectsGlobalGitLabToken(t *testing.T) {
+	t.Setenv("ENVPLANE_GITLAB_WEBHOOK_TOKEN", "legacy-token")
+	cfg := Config{
+		Addr:                ":8080",
+		ControlPlaneURL:     "https://api.example",
+		ControlPlaneToken:   "token",
+		GitHubWebhookSecret: "",
+		RequestTimeout:      time.Second,
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected global GitLab token configuration to be rejected")
+	}
+}
+
+func TestConfigFromEnvResolvesGitLabTokenByProject(t *testing.T) {
+	t.Setenv("ENVPLANE_GITLAB_WEBHOOK_TOKENS", `{"42":"token-42","group/repo":"token-path"}`)
+	t.Setenv("ENVPLANE_GITLAB_WEBHOOK_TOKEN", "")
+	cfg := ConfigFromEnv()
+	token, err := cfg.GitLabTokenResolver(context.Background(), "42", "group/repo")
+	if err != nil || token != "token-42" {
+		t.Fatalf("resolved token=%q err=%v", token, err)
+	}
+	if _, err := cfg.GitLabTokenResolver(context.Background(), "99", "other/repo"); err == nil {
+		t.Fatal("expected unknown project token lookup to fail")
+	}
+}
+
 func newTestServer(t *testing.T, controlPlaneURL string) *Server {
 	t.Helper()
 	application, err := New(Config{
