@@ -225,8 +225,9 @@ func TestGitHubIssueCommentWebhookSubmitsCommand(t *testing.T) {
 
 func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	var received scm.PullRequestEvent
+	expectedKey := "gitlab-delivery-7"
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Idempotency-Key"); got != "gitlab-delivery-7" {
+		if got := r.Header.Get("Idempotency-Key"); got != expectedKey {
 			http.Error(w, "unexpected idempotency key", http.StatusBadRequest)
 			return
 		}
@@ -250,6 +251,16 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	if rec.Code != http.StatusOK || received.Provider != scm.ProviderGitLab || received.ChangeID != "7" || received.EventID != "gitlab-delivery-7" {
 		t.Fatalf("response=%d event=%#v body=%s", rec.Code, received, rec.Body.String())
 	}
+	legacy := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
+	legacy.Header.Set("X-Gitlab-Event", "Merge Request Hook")
+	legacy.Header.Set("X-Gitlab-Token", "gitlab-token")
+	expectedKey = "gitlab|group/repo|open|7"
+	legacyRec := httptest.NewRecorder()
+	application.Routes().ServeHTTP(legacyRec, legacy)
+	if legacyRec.Code != http.StatusOK || received.EventID != "gitlab|group/repo|open|7" {
+		t.Fatalf("legacy response=%d event_id=%q body=%s", legacyRec.Code, received.EventID, legacyRec.Body.String())
+	}
+	expectedKey = "gitlab-delivery-7"
 	duplicate := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
 	duplicate.Header.Set("X-Gitlab-Event", "Merge Request Hook")
 	duplicate.Header.Set("X-Gitlab-Token", "gitlab-token")

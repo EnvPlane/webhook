@@ -391,7 +391,7 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		command.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Event-UUID"))
 		if command.EventID == "" {
-			command.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Delivery"))
+			command.EventID = command.PullRequestEvent(scm.ActionUpdate).DeduplicationKey()
 		}
 		if command.Command == "" {
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
@@ -434,7 +434,7 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	event.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Event-UUID"))
 	if event.EventID == "" {
-		event.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Delivery"))
+		event.EventID = event.DeduplicationKey()
 	}
 	if event.Action == scm.ActionIgnore {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
