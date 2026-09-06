@@ -46,15 +46,16 @@ func ParseGitHubPRCommand(body []byte) (PullRequestCommand, error) {
 		author = event.Sender.Login
 	}
 	return PullRequestCommand{
-		Provider:       ProviderGitHub,
-		Command:        command,
-		Repo:           event.Repository.FullName,
-		ChangeID:       fmt.Sprintf("%d", event.Issue.Number),
-		Author:         author,
-		URL:            event.Issue.HTMLURL,
-		InstallationID: normalizeWebhookInstallationID(event.Installation.ID),
-		PinDuration:    duration,
-		PinRaw:         raw,
+		Provider:          ProviderGitHub,
+		Command:           command,
+		Repo:              event.Repository.FullName,
+		ChangeID:          fmt.Sprintf("%d", event.Issue.Number),
+		Author:            author,
+		AuthorAssociation: strings.ToUpper(strings.TrimSpace(event.Comment.AuthorAssociation)),
+		URL:               event.Issue.HTMLURL,
+		InstallationID:    normalizeWebhookInstallationID(event.Installation.ID),
+		PinDuration:       duration,
+		PinRaw:            raw,
 	}, nil
 }
 
@@ -75,15 +76,17 @@ func ParseGitLabPRCommand(body []byte) (PullRequestCommand, error) {
 		author = event.User.Name
 	}
 	return PullRequestCommand{
-		Provider:       ProviderGitLab,
-		Command:        command,
-		Repo:           event.Project.PathWithNamespace,
-		ChangeID:       fmt.Sprintf("%d", event.MergeRequest.IID),
-		Author:         author,
-		URL:            event.MergeRequest.URL,
-		InstallationID: normalizeWebhookProjectID(event.Project.ID),
-		PinDuration:    duration,
-		PinRaw:         raw,
+		Provider:          ProviderGitLab,
+		Command:           command,
+		Repo:              event.Project.PathWithNamespace,
+		ChangeID:          fmt.Sprintf("%d", event.MergeRequest.IID),
+		Author:            author,
+		AuthorID:          normalizeWebhookUserID(event.User.ID),
+		AuthorAccessLevel: gitLabAuthorAccessLevel(event),
+		URL:               event.MergeRequest.URL,
+		InstallationID:    normalizeWebhookProjectID(event.Project.ID),
+		PinDuration:       duration,
+		PinRaw:            raw,
 	}, nil
 }
 
@@ -235,14 +238,17 @@ type gitLabMergeRequestEvent struct {
 type gitLabNoteEvent struct {
 	ObjectKind       string                 `json:"object_kind"`
 	User             gitLabUser             `json:"user"`
+	UserAccessLevel  int                    `json:"user_access_level"`
 	Project          gitLabProject          `json:"project"`
 	MergeRequest     gitLabNoteMergeRequest `json:"merge_request"`
 	ObjectAttributes gitLabNoteAttributes   `json:"object_attributes"`
 }
 
 type gitLabUser struct {
-	Name     string `json:"name"`
-	Username string `json:"username"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Username    string `json:"username"`
+	AccessLevel int    `json:"access_level"`
 }
 
 type gitLabProject struct {
@@ -329,8 +335,9 @@ type githubIssuePullRequest struct {
 }
 
 type githubComment struct {
-	Body string     `json:"body"`
-	User githubUser `json:"user"`
+	Body              string     `json:"body"`
+	User              githubUser `json:"user"`
+	AuthorAssociation string     `json:"author_association"`
 }
 
 type githubInstallation struct {
@@ -377,6 +384,20 @@ func normalizeWebhookInstallationID(value int64) string {
 		return ""
 	}
 	return strconv.FormatInt(value, 10)
+}
+
+func normalizeWebhookUserID(value int64) string {
+	if value <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(value, 10)
+}
+
+func gitLabAuthorAccessLevel(event gitLabNoteEvent) int {
+	if event.User.AccessLevel > 0 {
+		return event.User.AccessLevel
+	}
+	return event.UserAccessLevel
 }
 
 func normalizeWebhookProjectID(value int64) string {

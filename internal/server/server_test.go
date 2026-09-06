@@ -105,7 +105,7 @@ func TestGitHubIssueCommentWebhookSubmitsCommand(t *testing.T) {
 	}))
 	defer controlPlane.Close()
 	application := newTestServer(t, controlPlane.URL)
-	body := []byte(`{"action":"created","issue":{"number":42,"html_url":"https://github.com/owner/repo/issues/42","pull_request":{"url":"https://api.github.com/repos/owner/repo/pulls/42"}},"comment":{"body":"/envplane destroy","user":{"login":"octocat"}},"repository":{"full_name":"owner/repo"}}`)
+	body := []byte(`{"action":"created","issue":{"number":42,"html_url":"https://github.com/owner/repo/issues/42","pull_request":{"url":"https://api.github.com/repos/owner/repo/pulls/42"}},"comment":{"body":"/envplane destroy","author_association":"MEMBER","user":{"login":"octocat"}},"repository":{"full_name":"owner/repo"}}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", bytes.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "issue_comment")
 	req.Header.Set("X-GitHub-Delivery", "comment-42")
@@ -129,7 +129,7 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	}))
 	defer controlPlane.Close()
 	application := newTestServer(t, controlPlane.URL)
-	body := []byte(`{"object_kind":"merge_request","user":{"username":"alice"},"project":{"id":9,"path_with_namespace":"group/repo"},"object_attributes":{"iid":7,"action":"open","state":"opened","source_branch":"feature/7","url":"https://gitlab.example/group/repo/-/merge_requests/7","last_commit":{"id":"def7"}}}`)
+	body := []byte(`{"object_kind":"merge_request","user":{"id":77,"username":"alice","access_level":30},"project":{"id":9,"path_with_namespace":"group/repo"},"object_attributes":{"iid":7,"action":"open","state":"opened","source_branch":"feature/7","url":"https://gitlab.example/group/repo/-/merge_requests/7","last_commit":{"id":"def7"}}}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
 	req.Header.Set("X-Gitlab-Event", "Merge Request Hook")
 	req.Header.Set("X-Gitlab-Token", "gitlab-token")
@@ -246,5 +246,25 @@ func githubSignature(secret string, body []byte) string {
 func TestGitLabTokenComparisonRejectsDifferentLength(t *testing.T) {
 	if validGitLabToken("secret", "secret ") || validGitLabToken("secret", strings.Repeat("x", 7)) {
 		t.Fatal("invalid GitLab token accepted")
+	}
+}
+
+func TestAuthorizeCommandRequiresTrustedAuthor(t *testing.T) {
+	tests := []struct {
+		name    string
+		command scm.PullRequestCommand
+		allowed bool
+	}{
+		{name: "GitHub outsider", command: scm.PullRequestCommand{Provider: scm.ProviderGitHub, Command: scm.CommandDestroy, AuthorAssociation: "NONE"}},
+		{name: "GitHub member", command: scm.PullRequestCommand{Provider: scm.ProviderGitHub, Command: scm.CommandDestroy, AuthorAssociation: "MEMBER"}, allowed: true},
+		{name: "GitLab reporter", command: scm.PullRequestCommand{Provider: scm.ProviderGitLab, Command: scm.CommandDestroy, AuthorID: "77", AuthorAccessLevel: 20}},
+		{name: "GitLab developer", command: scm.PullRequestCommand{Provider: scm.ProviderGitLab, Command: scm.CommandDestroy, AuthorID: "77", AuthorAccessLevel: 30}, allowed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := authorizeCommand(tt.command) == nil; got != tt.allowed {
+				t.Fatalf("authorized=%v, want %v", got, tt.allowed)
+			}
+		})
 	}
 }

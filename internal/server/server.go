@@ -213,6 +213,12 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if err := authorizeCommand(command); err != nil {
+			s.recordDelivery(provider, "unauthorized_author")
+			s.logRejection(r, provider, "unauthorized_author", "issue_comment")
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
 		s.submitCommand(w, r, command)
 		return
 	}
@@ -264,6 +270,12 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := validateCommand(command); err != nil {
 			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := authorizeCommand(command); err != nil {
+			s.recordDelivery(string(scm.ProviderGitLab), "unauthorized_author")
+			s.logRejection(r, string(scm.ProviderGitLab), "unauthorized_author", "Note Hook")
+			writeError(w, http.StatusForbidden, err)
 			return
 		}
 		s.submitCommand(w, r, command)
@@ -382,6 +394,25 @@ func validateCommand(command scm.PullRequestCommand) error {
 		return errors.New("webhook command repository and change id are required")
 	}
 	return nil
+}
+
+func authorizeCommand(command scm.PullRequestCommand) error {
+	switch command.Provider {
+	case scm.ProviderGitHub:
+		switch strings.ToUpper(strings.TrimSpace(command.AuthorAssociation)) {
+		case "OWNER", "MEMBER", "COLLABORATOR":
+			return nil
+		default:
+			return errors.New("webhook command author is not authorized")
+		}
+	case scm.ProviderGitLab:
+		if command.AuthorAccessLevel >= 30 && strings.TrimSpace(command.AuthorID) != "" {
+			return nil
+		}
+		return errors.New("webhook command author is not authorized")
+	default:
+		return errors.New("webhook command provider is not authorized")
+	}
 }
 
 func (s *Server) submitCommand(w http.ResponseWriter, r *http.Request, command scm.PullRequestCommand) {
