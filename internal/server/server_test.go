@@ -286,13 +286,34 @@ func TestGitLabMemberAccessResolverFromEnvUsesProjectMemberAPI(t *testing.T) {
 	t.Setenv("ENVPLANE_GITLAB_API_TOKEN", "api-token")
 	t.Setenv("ENVPLANE_GITLAB_API_URL", api.URL)
 
-	resolver := gitLabMemberAccessResolverFromEnv()
+	resolver := gitLabMemberAccessResolverFromEnv(time.Second, 1, 0)
 	if resolver == nil {
 		t.Fatal("expected membership resolver")
 	}
 	level, err := resolver(context.Background(), "123", "77")
 	if err != nil || level != 40 {
 		t.Fatalf("access level=%d err=%v", level, err)
+	}
+}
+
+func TestGitLabMemberAccessResolverRetriesTransientFailures(t *testing.T) {
+	var attempts atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		if attempts.Load() == 1 {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.WriteString(w, `{"access_level":30}`)
+	}))
+	defer api.Close()
+	t.Setenv("ENVPLANE_GITLAB_API_TOKEN", "api-token")
+	t.Setenv("ENVPLANE_GITLAB_API_URL", api.URL)
+
+	resolver := gitLabMemberAccessResolverFromEnv(time.Second, 2, time.Millisecond)
+	level, err := resolver(context.Background(), "123", "77")
+	if err != nil || level != 30 || attempts.Load() != 2 {
+		t.Fatalf("access level=%d attempts=%d err=%v", level, attempts.Load(), err)
 	}
 }
 
@@ -350,6 +371,48 @@ func TestGitLabNoteHookAuthorAccessIsResolvedOutsidePayload(t *testing.T) {
 	}
 }
 
+func TestGitLabNoteHookReturnsServiceUnavailableForMembershipFailures(t *testing.T) {
+	body := []byte(`{"object_kind":"note","user":{"id":77},"project":{"id":123,"path_with_namespace":"group/repo"},"merge_request":{"iid":2201},"object_attributes":{"note":"/envplane destroy"}}`)
+	application, err := New(Config{
+		Addr:                       ":8080",
+		ControlPlaneURL:            "https://control-plane.example",
+		ControlPlaneToken:          "control-plane-token",
+		GitLabTokenResolver:        func(context.Context, string, string) (string, error) { return "gitlab-token", nil },
+		GitLabMemberAccessResolver: func(context.Context, string, string) (int, error) { return 0, errors.New("GitLab unavailable") },
+		RequestTimeout:             time.Second,
+	}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
+	req.Header.Set("X-Gitlab-Event", "Note Hook")
+	req.Header.Set("X-Gitlab-Token", "gitlab-token")
+	req.Header.Set("X-Gitlab-Event-UUID", "membership-failure")
+	rec := httptest.NewRecorder()
+	application.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("resolver error response=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	nilApplication := &Server{
+		cfg:              Config{GitLabTokenResolver: func(context.Context, string, string) (string, error) { return "gitlab-token", nil }},
+		client:           http.DefaultClient,
+		logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		deliveries:       map[string]uint64{},
+		recentDeliveries: map[string]time.Time{},
+		limiter:          newRateLimiter(100, 10),
+	}
+	nilRequest := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
+	nilRequest.Header.Set("X-Gitlab-Event", "Note Hook")
+	nilRequest.Header.Set("X-Gitlab-Token", "gitlab-token")
+	nilRequest.Header.Set("X-Gitlab-Event-UUID", "membership-nil")
+	nilResponse := httptest.NewRecorder()
+	nilApplication.Routes().ServeHTTP(nilResponse, nilRequest)
+	if nilResponse.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil resolver response=%d body=%s", nilResponse.Code, nilResponse.Body.String())
+	}
+}
+
 func TestGitLabWebhookRejectsTokenForAnotherProject(t *testing.T) {
 	var submissions atomic.Int32
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -366,6 +429,9 @@ func TestGitLabWebhookRejectsTokenForAnotherProject(t *testing.T) {
 				return "", errors.New("unknown project")
 			}
 			return "token-a", nil
+		},
+		GitLabMemberAccessResolver: func(context.Context, string, string) (int, error) {
+			return 30, nil
 		},
 		RequestTimeout: time.Second,
 	}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
