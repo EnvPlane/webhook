@@ -53,61 +53,95 @@ type Config struct {
 
 func ConfigFromEnv() Config {
 	gitLabResolver := gitLabTokenResolverFromEnv()
-	gitLabMemberResolver := gitLabMemberAccessResolverFromEnv()
+	requestTimeout := durationFromEnv("ENVPLANE_WEBHOOK_REQUEST_TIMEOUT", 10*time.Second)
+	controlPlaneRetries := intFromEnv("ENVPLANE_WEBHOOK_CONTROL_PLANE_RETRIES", 3)
+	retryBackoff := durationFromEnv("ENVPLANE_WEBHOOK_RETRY_BACKOFF", 100*time.Millisecond)
 	return Config{
 		Addr:                       envOrDefault("ENVPLANE_WEBHOOK_ADDR", ":8080"),
 		ControlPlaneURL:            strings.TrimRight(strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_URL")), "/"),
 		ControlPlaneToken:          strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_TOKEN")),
 		GitHubWebhookSecret:        strings.TrimSpace(os.Getenv("ENVPLANE_GITHUB_WEBHOOK_SECRET")),
 		GitLabTokenResolver:        gitLabResolver,
-		GitLabMemberAccessResolver: gitLabMemberResolver,
+		GitLabMemberAccessResolver: gitLabMemberAccessResolverFromEnv(requestTimeout, controlPlaneRetries, retryBackoff),
 		GitLabAPIURL:               envOrDefault("ENVPLANE_GITLAB_API_URL", "https://gitlab.com/api/v4"),
 		GitLabAPIToken:             strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_API_TOKEN")),
-		RequestTimeout:             durationFromEnv("ENVPLANE_WEBHOOK_REQUEST_TIMEOUT", 10*time.Second),
+		RequestTimeout:             requestTimeout,
 		ReadyStaleAfter:            durationFromEnv("ENVPLANE_WEBHOOK_READY_STALE_AFTER", 2*time.Minute),
 		ReplayTTL:                  durationFromEnv("ENVPLANE_WEBHOOK_REPLAY_TTL", defaultReplayTTL),
 		RateLimitPerSecond:         floatFromEnv("ENVPLANE_WEBHOOK_RATE_LIMIT_RPS", defaultRatePerSecond),
 		RateLimitBurst:             intFromEnv("ENVPLANE_WEBHOOK_RATE_LIMIT_BURST", defaultRateBurst),
-		ControlPlaneRetries:        intFromEnv("ENVPLANE_WEBHOOK_CONTROL_PLANE_RETRIES", 3),
-		RetryBackoff:               durationFromEnv("ENVPLANE_WEBHOOK_RETRY_BACKOFF", 100*time.Millisecond),
+		ControlPlaneRetries:        controlPlaneRetries,
+		RetryBackoff:               retryBackoff,
 	}
 }
 
-func gitLabMemberAccessResolverFromEnv() func(context.Context, string, string) (int, error) {
+func gitLabMemberAccessResolverFromEnv(timeout time.Duration, retries int, backoff time.Duration) func(context.Context, string, string) (int, error) {
 	token := strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_API_TOKEN"))
 	if token == "" {
 		return nil
 	}
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	if retries <= 0 {
+		retries = 1
+	}
 	baseURL := strings.TrimRight(envOrDefault("ENVPLANE_GITLAB_API_URL", "https://gitlab.com/api/v4"), "/")
+	client := &http.Client{Timeout: timeout}
 	return func(ctx context.Context, projectID, userID string) (int, error) {
 		if strings.TrimSpace(projectID) == "" || strings.TrimSpace(userID) == "" {
 			return 0, errors.New("GitLab project and user IDs are required for membership lookup")
 		}
 		endpoint := baseURL + "/projects/" + url.PathEscape(projectID) + "/members/all/" + url.PathEscape(userID)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-		if err != nil {
-			return 0, err
+		for attempt := 0; attempt < retries; attempt++ {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+			if err != nil {
+				return 0, err
+			}
+			req.Header.Set("PRIVATE-TOKEN", token)
+			response, err := client.Do(req)
+			if err == nil {
+				if response.StatusCode == http.StatusNotFound {
+					_ = response.Body.Close()
+					return 0, nil
+				}
+				if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+					var member struct {
+						AccessLevel int `json:"access_level"`
+					}
+					decodeErr := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&member)
+					_ = response.Body.Close()
+					if decodeErr != nil {
+						return 0, fmt.Errorf("decode GitLab membership response: %w", decodeErr)
+					}
+					return member.AccessLevel, nil
+				}
+				err = fmt.Errorf("GitLab membership lookup returned HTTP %d", response.StatusCode)
+			}
+			if response != nil {
+				_ = response.Body.Close()
+			}
+			retryable := response == nil || retryableGitLabStatus(responseStatus(response))
+			if attempt+1 == retries || !retryable {
+				return 0, err
+			}
+			if err := waitForRetry(ctx, backoff, attempt); err != nil {
+				return 0, err
+			}
 		}
-		req.Header.Set("PRIVATE-TOKEN", token)
-		response, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-		if err != nil {
-			return 0, err
-		}
-		defer func() { _ = response.Body.Close() }()
-		if response.StatusCode == http.StatusNotFound {
-			return 0, nil
-		}
-		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return 0, fmt.Errorf("GitLab membership lookup returned HTTP %d", response.StatusCode)
-		}
-		var member struct {
-			AccessLevel int `json:"access_level"`
-		}
-		if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&member); err != nil {
-			return 0, fmt.Errorf("decode GitLab membership response: %w", err)
-		}
-		return member.AccessLevel, nil
+		return 0, errors.New("GitLab membership lookup retry loop exhausted")
 	}
+}
+
+func responseStatus(response *http.Response) int {
+	if response == nil {
+		return 0
+	}
+	return response.StatusCode
+}
+
+func retryableGitLabStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status >= http.StatusInternalServerError
 }
 
 func gitLabTokenResolverFromEnv() func(context.Context, string, string) (string, error) {
@@ -150,6 +184,9 @@ func (c Config) Validate() error {
 	}
 	if c.GitLabTokenResolver == nil && strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_WEBHOOK_TOKEN")) != "" {
 		return fmt.Errorf("ENVPLANE_GITLAB_WEBHOOK_TOKENS must configure per-project GitLab secrets")
+	}
+	if c.GitLabTokenResolver != nil && c.GitLabMemberAccessResolver == nil {
+		return fmt.Errorf("ENVPLANE_GITLAB_API_TOKEN is required when GitLab webhook projects are configured")
 	}
 	if c.RequestTimeout <= 0 {
 		return fmt.Errorf("webhook request timeout must be positive")
