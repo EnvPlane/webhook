@@ -536,6 +536,10 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if strings.TrimSpace(s.cfg.ReceiverToken) != "" {
+		s.submitGitLabRaw(w, r, body, event)
+		return
+	}
 	if !s.validGitLabRequest(r, event.InstallationID, event.Repo) {
 		s.rejectGitLabToken(w, r)
 		return
@@ -556,6 +560,28 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.submit(w, r, event)
+}
+
+func (s *Server) submitGitLabRaw(w http.ResponseWriter, r *http.Request, body []byte, event scm.PullRequestEvent) {
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
+	defer cancel()
+	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+"/api/v1/webhook-receiver/gitlab", body, map[string]string{
+		"Authorization":       "Bearer " + s.cfg.ReceiverToken,
+		"Content-Type":        "application/json",
+		"X-Gitlab-Token":      r.Header.Get("X-Gitlab-Token"),
+		"X-Gitlab-Event-UUID": r.Header.Get("X-Gitlab-Event-UUID"),
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, errors.New("control-plane is unavailable"))
+		return
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		writeError(w, response.StatusCode, errors.New("GitLab delivery was rejected"))
+		return
+	}
+	s.recordForward(string(scm.ProviderGitLab), time.Now())
+	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 }
 
 // The replay cache is process-local. Multi-replica deployments need sticky routing
