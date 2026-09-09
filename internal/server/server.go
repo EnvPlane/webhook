@@ -543,11 +543,15 @@ func (s *Server) submitGitLabRaw(w http.ResponseWriter, r *http.Request, body []
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
 	defer cancel()
 	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+"/api/v1/webhook-receiver/gitlab", body, map[string]string{
-		"Authorization":       "Bearer " + s.cfg.ReceiverToken,
-		"Content-Type":        "application/json",
-		"X-Gitlab-Token":      r.Header.Get("X-Gitlab-Token"),
-		"X-Gitlab-Event-UUID": r.Header.Get("X-Gitlab-Event-UUID"),
-		"Idempotency-Key":     strings.TrimSpace(event.EventID),
+		"Authorization":             "Bearer " + s.cfg.ReceiverToken,
+		"Content-Type":              "application/json",
+		"X-Gitlab-Token":            r.Header.Get("X-Gitlab-Token"),
+		"X-Gitlab-Event-UUID":       r.Header.Get("X-Gitlab-Event-UUID"),
+		"X-Gitlab-Event":            r.Header.Get("X-Gitlab-Event"),
+		"X-Gitlab-Project-ID":       event.InstallationID,
+		"X-EnvPlane-Webhook-Probe":  r.Header.Get("X-EnvPlane-Webhook-Probe"),
+		"X-EnvPlane-Delivery-Nonce": r.Header.Get("X-EnvPlane-Delivery-Nonce"),
+		"Idempotency-Key":           strings.TrimSpace(event.EventID),
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, errors.New("control-plane is unavailable"))
@@ -570,6 +574,10 @@ func (s *Server) submitGitLabRawCommand(w http.ResponseWriter, r *http.Request, 
 		"Content-Type":                   "application/json",
 		"X-Gitlab-Token":                 r.Header.Get("X-Gitlab-Token"),
 		"X-Gitlab-Event-UUID":            r.Header.Get("X-Gitlab-Event-UUID"),
+		"X-Gitlab-Event":                 r.Header.Get("X-Gitlab-Event"),
+		"X-Gitlab-Project-ID":            command.InstallationID,
+		"X-EnvPlane-Webhook-Probe":       r.Header.Get("X-EnvPlane-Webhook-Probe"),
+		"X-EnvPlane-Delivery-Nonce":      r.Header.Get("X-EnvPlane-Delivery-Nonce"),
 		"X-EnvPlane-Author-Access-Level": strconv.Itoa(command.AuthorAccessLevel),
 		"Idempotency-Key":                strings.TrimSpace(command.EventID),
 	})

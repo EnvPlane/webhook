@@ -237,6 +237,10 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 			http.Error(w, "unexpected idempotency key", http.StatusBadRequest)
 			return
 		}
+		if r.Header.Get("X-EnvPlane-Webhook-Probe") == "true" && (r.Header.Get("X-Gitlab-Project-ID") != "9" || r.Header.Get("X-Gitlab-Event") != "Merge Request Hook" || r.Header.Get("X-EnvPlane-Delivery-Nonce") != "probe-7") {
+			http.Error(w, "missing webhook correlation headers", http.StatusBadRequest)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "read event: "+err.Error(), http.StatusBadRequest)
@@ -262,6 +266,8 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	req.Header.Set("X-Gitlab-Event", "Merge Request Hook")
 	req.Header.Set("X-Gitlab-Token", "gitlab-token")
 	req.Header.Set("X-Gitlab-Event-UUID", "gitlab-delivery-7")
+	req.Header.Set("X-EnvPlane-Webhook-Probe", "true")
+	req.Header.Set("X-EnvPlane-Delivery-Nonce", "probe-7")
 	rec := httptest.NewRecorder()
 	application.Routes().ServeHTTP(rec, req)
 
