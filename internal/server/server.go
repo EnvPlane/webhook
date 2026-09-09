@@ -359,6 +359,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("X-EnvPlane-Webhook-Receiver", "v1")
 	lastSuccess := atomic.LoadInt64(&s.lastControlPlaneSuccess)
 	last := time.Unix(0, lastSuccess)
 	if lastSuccess == 0 || time.Since(last) > s.cfg.ReadyStaleAfter {
