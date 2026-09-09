@@ -55,7 +55,10 @@ type Config struct {
 }
 
 func ConfigFromEnv() Config {
-	gitLabResolver := gitLabTokenResolverFromEnv()
+	var gitLabResolver func(context.Context, string, string) (string, error)
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("ENVPLANE_WEBHOOK_LEGACY_LOCAL_GITLAB_VERIFICATION")), "true") {
+		gitLabResolver = gitLabTokenResolverFromEnv()
+	}
 	requestTimeout := durationFromEnv("ENVPLANE_WEBHOOK_REQUEST_TIMEOUT", 10*time.Second)
 	controlPlaneRetries := intFromEnv("ENVPLANE_WEBHOOK_CONTROL_PLANE_RETRIES", 3)
 	retryBackoff := durationFromEnv("ENVPLANE_WEBHOOK_RETRY_BACKOFF", 100*time.Millisecond)
@@ -63,7 +66,7 @@ func ConfigFromEnv() Config {
 		Addr:                       envOrDefault("ENVPLANE_WEBHOOK_ADDR", ":8080"),
 		ControlPlaneURL:            strings.TrimRight(strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_URL")), "/"),
 		ControlPlaneToken:          strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_TOKEN")),
-		ReceiverToken:              strings.TrimSpace(envOrDefault("ENVPLANE_WEBHOOK_RECEIVER_TOKEN", os.Getenv("ENVPLANE_CONTROL_PLANE_TOKEN"))),
+		ReceiverToken:              strings.TrimSpace(os.Getenv("ENVPLANE_WEBHOOK_RECEIVER_TOKEN")),
 		GitHubWebhookSecret:        strings.TrimSpace(os.Getenv("ENVPLANE_GITHUB_WEBHOOK_SECRET")),
 		GitLabTokenResolver:        gitLabResolver,
 		GitLabMemberAccessResolver: gitLabMemberAccessResolverFromEnv(requestTimeout, controlPlaneRetries, retryBackoff),
@@ -189,17 +192,8 @@ func (c Config) Validate() error {
 	if !strings.HasPrefix(c.ControlPlaneURL, "http://") && !strings.HasPrefix(c.ControlPlaneURL, "https://") {
 		return fmt.Errorf("ENVPLANE_CONTROL_PLANE_URL must be an HTTP(S) URL")
 	}
-	if strings.TrimSpace(firstNonEmpty(c.ReceiverToken, c.ControlPlaneToken)) == "" {
+	if strings.TrimSpace(c.ReceiverToken) == "" {
 		return fmt.Errorf("ENVPLANE_WEBHOOK_RECEIVER_TOKEN is required")
-	}
-	if strings.TrimSpace(c.GitHubWebhookSecret) == "" && c.GitLabTokenResolver == nil {
-		return fmt.Errorf("configure at least one webhook provider secret")
-	}
-	if c.GitLabTokenResolver == nil && strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_WEBHOOK_TOKEN")) != "" {
-		return fmt.Errorf("ENVPLANE_GITLAB_WEBHOOK_TOKENS must configure per-project GitLab secrets")
-	}
-	if c.GitLabTokenResolver != nil && c.GitLabMemberAccessResolver == nil {
-		return fmt.Errorf("ENVPLANE_GITLAB_API_TOKEN is required when GitLab webhook projects are configured")
 	}
 	if c.RequestTimeout <= 0 {
 		return fmt.Errorf("webhook request timeout must be positive")
@@ -481,8 +475,8 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if !s.validGitLabRequest(r, command.InstallationID, command.Repo) {
-			s.rejectGitLabToken(w, r)
+		if strings.TrimSpace(s.cfg.ReceiverToken) == "" {
+			writeError(w, http.StatusServiceUnavailable, errors.New("webhook receiver token is not configured"))
 			return
 		}
 		command.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Event-UUID"))
@@ -516,10 +510,7 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, err)
 			return
 		}
-		if s.rejectReplay(w, r, string(scm.ProviderGitLab), command.EventID) {
-			return
-		}
-		s.submitCommand(w, r, command)
+		s.submitGitLabRawCommand(w, r, body, command)
 		return
 	}
 	if eventType != "" && eventType != "Merge Request Hook" {
@@ -537,30 +528,15 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if strings.TrimSpace(s.cfg.ReceiverToken) != "" {
-		s.submitGitLabRaw(w, r, body, event)
-		return
-	}
-	if !s.validGitLabRequest(r, event.InstallationID, event.Repo) {
-		s.rejectGitLabToken(w, r)
-		return
-	}
 	event.EventID = strings.TrimSpace(r.Header.Get("X-Gitlab-Event-UUID"))
 	if event.EventID == "" {
 		event.EventID = event.DeduplicationKey()
 	}
-	if event.Action == scm.ActionIgnore {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
+	if strings.TrimSpace(s.cfg.ReceiverToken) != "" {
+		s.submitGitLabRaw(w, r, body, event)
 		return
 	}
-	if err := validateEvent(event); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if s.rejectReplay(w, r, string(scm.ProviderGitLab), event.EventID) {
-		return
-	}
-	s.submit(w, r, event)
+	writeError(w, http.StatusServiceUnavailable, errors.New("webhook receiver token is not configured"))
 }
 
 func (s *Server) submitGitLabRaw(w http.ResponseWriter, r *http.Request, body []byte, event scm.PullRequestEvent) {
@@ -571,6 +547,7 @@ func (s *Server) submitGitLabRaw(w http.ResponseWriter, r *http.Request, body []
 		"Content-Type":        "application/json",
 		"X-Gitlab-Token":      r.Header.Get("X-Gitlab-Token"),
 		"X-Gitlab-Event-UUID": r.Header.Get("X-Gitlab-Event-UUID"),
+		"Idempotency-Key":     strings.TrimSpace(event.EventID),
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, errors.New("control-plane is unavailable"))
@@ -579,6 +556,30 @@ func (s *Server) submitGitLabRaw(w http.ResponseWriter, r *http.Request, body []
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		writeError(w, response.StatusCode, errors.New("GitLab delivery was rejected"))
+		return
+	}
+	s.recordForward(string(scm.ProviderGitLab), time.Now())
+	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
+}
+
+func (s *Server) submitGitLabRawCommand(w http.ResponseWriter, r *http.Request, body []byte, command scm.PullRequestCommand) {
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
+	defer cancel()
+	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+"/api/v1/webhook-receiver/gitlab-command", body, map[string]string{
+		"Authorization":                  "Bearer " + s.cfg.ReceiverToken,
+		"Content-Type":                   "application/json",
+		"X-Gitlab-Token":                 r.Header.Get("X-Gitlab-Token"),
+		"X-Gitlab-Event-UUID":            r.Header.Get("X-Gitlab-Event-UUID"),
+		"X-EnvPlane-Author-Access-Level": strconv.Itoa(command.AuthorAccessLevel),
+		"Idempotency-Key":                strings.TrimSpace(command.EventID),
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, errors.New("control-plane is unavailable"))
+		return
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		writeError(w, response.StatusCode, errors.New("GitLab command was rejected"))
 		return
 	}
 	s.recordForward(string(scm.ProviderGitLab), time.Now())

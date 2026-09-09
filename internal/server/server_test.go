@@ -25,11 +25,11 @@ func TestGitHubWebhookValidatesSignatureAndSubmitsNormalizedJob(t *testing.T) {
 	var submissions atomic.Int32
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		submissions.Add(1)
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/jobs" {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/webhook-receiver/events" {
 			http.Error(w, "unexpected control-plane request", http.StatusBadRequest)
 			return
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer control-plane-token" {
+		if got := r.Header.Get("Authorization"); got != "Bearer receiver-token" {
 			http.Error(w, "unexpected authorization", http.StatusUnauthorized)
 			return
 		}
@@ -115,6 +115,7 @@ func TestWebhookRateLimitRejectsExcessRequests(t *testing.T) {
 		Addr:                ":8080",
 		ControlPlaneURL:     controlPlane.URL,
 		ControlPlaneToken:   "control-plane-token",
+		ReceiverToken:       "receiver-token",
 		GitHubWebhookSecret: "github-secret",
 		RequestTimeout:      time.Second,
 		ReadyStaleAfter:     time.Second,
@@ -166,6 +167,7 @@ func TestWebhookRetriesTemporaryControlPlaneFailure(t *testing.T) {
 		Addr:                ":8080",
 		ControlPlaneURL:     controlPlane.URL,
 		ControlPlaneToken:   "control-plane-token",
+		ReceiverToken:       "receiver-token",
 		GitHubWebhookSecret: "github-secret",
 		RequestTimeout:      time.Second,
 		ReadyStaleAfter:     time.Second,
@@ -227,13 +229,28 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	var received scm.PullRequestEvent
 	expectedKey := "gitlab-delivery-7"
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/webhook-receiver/gitlab" || r.Header.Get("Authorization") != "Bearer receiver-token" {
+			http.Error(w, "unexpected receiver request", http.StatusBadRequest)
+			return
+		}
 		if got := r.Header.Get("Idempotency-Key"); got != expectedKey {
 			http.Error(w, "unexpected idempotency key", http.StatusBadRequest)
 			return
 		}
-		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read event: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		parsed, err := scm.ParseGitLabMergeRequest(body)
+		if err != nil {
 			http.Error(w, "decode event: "+err.Error(), http.StatusBadRequest)
 			return
+		}
+		received = parsed
+		received.EventID = r.Header.Get("X-Gitlab-Event-UUID")
+		if received.EventID == "" {
+			received.EventID = received.DeduplicationKey()
 		}
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = io.WriteString(w, `{"id":"job-7"}`)
@@ -267,7 +284,7 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	duplicate.Header.Set("X-Gitlab-Event-UUID", "gitlab-delivery-7")
 	duplicateRec := httptest.NewRecorder()
 	application.Routes().ServeHTTP(duplicateRec, duplicate)
-	if duplicateRec.Code != http.StatusOK || !strings.Contains(duplicateRec.Body.String(), "duplicate_ignored") {
+	if duplicateRec.Code != http.StatusOK || !strings.Contains(duplicateRec.Body.String(), "accepted") {
 		t.Fatalf("duplicate response=%d body=%s", duplicateRec.Code, duplicateRec.Body.String())
 	}
 }
@@ -322,6 +339,14 @@ func TestGitLabNoteHookAuthorAccessIsResolvedOutsidePayload(t *testing.T) {
 	accessLevel := 40
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		submissions.Add(1)
+		if r.URL.Path != "/api/v1/webhook-receiver/gitlab-command" || r.Header.Get("Authorization") != "Bearer receiver-token" {
+			http.Error(w, "unexpected command receiver request", http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("X-Gitlab-Token") != "gitlab-token" || r.Header.Get("X-EnvPlane-Author-Access-Level") != "40" {
+			http.Error(w, "missing trusted delivery headers", http.StatusBadRequest)
+			return
+		}
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = io.WriteString(w, `{"id":"job-note"}`)
 	}))
@@ -331,6 +356,7 @@ func TestGitLabNoteHookAuthorAccessIsResolvedOutsidePayload(t *testing.T) {
 		Addr:              ":8080",
 		ControlPlaneURL:   controlPlane.URL,
 		ControlPlaneToken: "control-plane-token",
+		ReceiverToken:     "receiver-token",
 		GitLabTokenResolver: func(_ context.Context, projectID, _ string) (string, error) {
 			if projectID != "123" {
 				return "", errors.New("unknown project")
@@ -377,6 +403,7 @@ func TestGitLabNoteHookReturnsServiceUnavailableForMembershipFailures(t *testing
 		Addr:                       ":8080",
 		ControlPlaneURL:            "https://control-plane.example",
 		ControlPlaneToken:          "control-plane-token",
+		ReceiverToken:              "receiver-token",
 		GitLabTokenResolver:        func(context.Context, string, string) (string, error) { return "gitlab-token", nil },
 		GitLabMemberAccessResolver: func(context.Context, string, string) (int, error) { return 0, errors.New("GitLab unavailable") },
 		RequestTimeout:             time.Second,
@@ -417,13 +444,14 @@ func TestGitLabWebhookRejectsTokenForAnotherProject(t *testing.T) {
 	var submissions atomic.Int32
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		submissions.Add(1)
-		w.WriteHeader(http.StatusAccepted)
+		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer controlPlane.Close()
 	application, err := New(Config{
 		Addr:              ":8080",
 		ControlPlaneURL:   controlPlane.URL,
 		ControlPlaneToken: "control-plane-token",
+		ReceiverToken:     "receiver-token",
 		GitLabTokenResolver: func(_ context.Context, projectID, _ string) (string, error) {
 			if projectID != "project-a" {
 				return "", errors.New("unknown project")
@@ -445,7 +473,7 @@ func TestGitLabWebhookRejectsTokenForAnotherProject(t *testing.T) {
 	rec := httptest.NewRecorder()
 	application.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized || submissions.Load() != 0 {
+	if rec.Code != http.StatusUnauthorized || submissions.Load() != 1 {
 		t.Fatalf("response=%d submissions=%d body=%s", rec.Code, submissions.Load(), rec.Body.String())
 	}
 }
@@ -478,6 +506,7 @@ func TestConfigRejectsGlobalGitLabToken(t *testing.T) {
 }
 
 func TestConfigFromEnvResolvesGitLabTokenByProject(t *testing.T) {
+	t.Setenv("ENVPLANE_WEBHOOK_LEGACY_LOCAL_GITLAB_VERIFICATION", "true")
 	t.Setenv("ENVPLANE_GITLAB_WEBHOOK_TOKENS", `{"42":"token-42","group/repo":"token-path"}`)
 	t.Setenv("ENVPLANE_GITLAB_WEBHOOK_TOKEN", "")
 	cfg := ConfigFromEnv()
@@ -496,6 +525,7 @@ func newTestServer(t *testing.T, controlPlaneURL string) *Server {
 		Addr:                ":8080",
 		ControlPlaneURL:     controlPlaneURL,
 		ControlPlaneToken:   "control-plane-token",
+		ReceiverToken:       "receiver-token",
 		GitHubWebhookSecret: "github-secret",
 		GitLabTokenResolver: func(_ context.Context, projectID, _ string) (string, error) {
 			if projectID != "9" {

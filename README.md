@@ -4,7 +4,8 @@ Stateless GitHub and GitLab webhook receiver for [EnvPlane](https://envplane.dev
 
 ## Responsibilities
 
-- Validate provider signatures before processing events.
+- Validate GitHub signatures locally and forward GitLab deliveries for
+  control-plane signature verification.
 - Normalize pull-request and merge-request payloads.
 - Submit normalized events through the receiver-only control-plane capability.
 - Expose health and liveness endpoints.
@@ -14,7 +15,7 @@ Stateless GitHub and GitLab webhook receiver for [EnvPlane](https://envplane.dev
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/v1/webhooks/github` | GitHub events with `X-Hub-Signature-256` validation |
-| `POST /api/v1/webhooks/gitlab` | GitLab events with `X-Gitlab-Token` validation |
+| `POST /api/v1/webhooks/gitlab` | GitLab events forwarded raw for control-plane validation |
 | `GET /health` | Service health |
 | `GET /livez` | Process liveness |
 
@@ -28,10 +29,11 @@ go run ./apps/webhook
 ```
 
 `ENVPLANE_WEBHOOK_RECEIVER_TOKEN` is a machine credential restricted to
-`/api/v1/webhook-receiver/events`; it cannot call control-plane user or admin
-APIs. During a staged migration, `ENVPLANE_CONTROL_PLANE_TOKEN` remains a
-legacy fallback only when the receiver token is absent. Remove that fallback
-after every deployed receiver has been upgraded.
+receiver endpoints; it cannot call control-plane user or admin APIs.
+`ENVPLANE_CONTROL_PLANE_TOKEN` is retained only for legacy normalized command
+delivery. GitLab signing secrets are not configured in this pod: Merge Request
+and Note Hook payloads are forwarded raw, and control-plane verifies
+`X-Gitlab-Token` against its encrypted per-project credential.
 The standalone Helm chart is maintained in
 [EnvPlane/deploy](https://github.com/EnvPlane/deploy/tree/main/deploy/helm/envplane-webhook).
 
@@ -55,13 +57,11 @@ URLs until a signed test delivery reaches the new receiver. Rolling back is
 safe: retain the managed Secret and restore the previous receiver deployment
 before changing the provider callback URL.
 
-GitLab Note Hook author membership checks require `ENVPLANE_GITLAB_API_TOKEN`
-whenever `ENVPLANE_GITLAB_WEBHOOK_TOKENS` configures one or more projects. The
-current implementation intentionally uses one GitLab API token for all
-configured projects; provision it with the minimum `read_api` scope and grant
-it access only to the groups and projects served by this webhook. A missing
-API token is a startup configuration error, not a runtime fallback. Membership
-requests use the configured webhook request timeout and retry/backoff settings.
+GitLab Note Hook author membership checks still use the GitLab API token in the
+receiver, with the minimum `read_api` scope and access limited to the served
+groups and projects. This token is separate from the per-project signing
+secret. A Note Hook is accepted only after membership authorization and raw
+forwarding; the control-plane then performs the signing-secret check.
 
 ## Status
 
