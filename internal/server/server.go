@@ -34,9 +34,12 @@ const (
 )
 
 type Config struct {
-	Addr                       string
-	ControlPlaneURL            string
-	ControlPlaneToken          string
+	Addr              string
+	ControlPlaneURL   string
+	ControlPlaneToken string
+	// ReceiverToken is a capability token accepted solely by the control-plane
+	// webhook receiver endpoint. ControlPlaneToken remains for legacy commands.
+	ReceiverToken              string
 	GitHubWebhookSecret        string
 	GitLabTokenResolver        func(context.Context, string, string) (string, error)
 	GitLabMemberAccessResolver func(context.Context, string, string) (int, error)
@@ -60,6 +63,7 @@ func ConfigFromEnv() Config {
 		Addr:                       envOrDefault("ENVPLANE_WEBHOOK_ADDR", ":8080"),
 		ControlPlaneURL:            strings.TrimRight(strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_URL")), "/"),
 		ControlPlaneToken:          strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_TOKEN")),
+		ReceiverToken:              strings.TrimSpace(envOrDefault("ENVPLANE_WEBHOOK_RECEIVER_TOKEN", os.Getenv("ENVPLANE_CONTROL_PLANE_TOKEN"))),
 		GitHubWebhookSecret:        strings.TrimSpace(os.Getenv("ENVPLANE_GITHUB_WEBHOOK_SECRET")),
 		GitLabTokenResolver:        gitLabResolver,
 		GitLabMemberAccessResolver: gitLabMemberAccessResolverFromEnv(requestTimeout, controlPlaneRetries, retryBackoff),
@@ -73,6 +77,15 @@ func ConfigFromEnv() Config {
 		ControlPlaneRetries:        controlPlaneRetries,
 		RetryBackoff:               retryBackoff,
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func gitLabMemberAccessResolverFromEnv(timeout time.Duration, retries int, backoff time.Duration) func(context.Context, string, string) (int, error) {
@@ -176,8 +189,8 @@ func (c Config) Validate() error {
 	if !strings.HasPrefix(c.ControlPlaneURL, "http://") && !strings.HasPrefix(c.ControlPlaneURL, "https://") {
 		return fmt.Errorf("ENVPLANE_CONTROL_PLANE_URL must be an HTTP(S) URL")
 	}
-	if strings.TrimSpace(c.ControlPlaneToken) == "" {
-		return fmt.Errorf("ENVPLANE_CONTROL_PLANE_TOKEN is required")
+	if strings.TrimSpace(firstNonEmpty(c.ReceiverToken, c.ControlPlaneToken)) == "" {
+		return fmt.Errorf("ENVPLANE_WEBHOOK_RECEIVER_TOKEN is required")
 	}
 	if strings.TrimSpace(c.GitHubWebhookSecret) == "" && c.GitLabTokenResolver == nil {
 		return fmt.Errorf("configure at least one webhook provider secret")
@@ -661,8 +674,16 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRe
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
 	defer cancel()
-	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+"/api/v1/jobs", payload, map[string]string{
-		"Authorization":               "Bearer " + s.cfg.ControlPlaneToken,
+	endpoint := "/api/v1/webhook-receiver/events"
+	token := strings.TrimSpace(s.cfg.ReceiverToken)
+	// The fallback preserves existing manually configured receiver deployments
+	// during migration. Helm-managed deployments always set ReceiverToken.
+	if token == "" {
+		endpoint = "/api/v1/jobs"
+		token = s.cfg.ControlPlaneToken
+	}
+	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+endpoint, payload, map[string]string{
+		"Authorization":               "Bearer " + token,
 		"Content-Type":                "application/json",
 		"Accept":                      "application/json",
 		"X-EnvPlane-Webhook-Provider": string(event.Provider),
