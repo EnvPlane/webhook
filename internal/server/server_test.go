@@ -359,10 +359,11 @@ func TestGitLabNoteHookAuthorAccessIsResolvedOutsidePayload(t *testing.T) {
 	defer controlPlane.Close()
 
 	application, err := New(Config{
-		Addr:              ":8080",
-		ControlPlaneURL:   controlPlane.URL,
-		ControlPlaneToken: "control-plane-token",
-		ReceiverToken:     "receiver-token",
+		Addr:                ":8080",
+		ControlPlaneURL:     controlPlane.URL,
+		ControlPlaneToken:   "control-plane-token",
+		ReceiverToken:       "receiver-token",
+		LegacyFallbackUntil: time.Now().UTC().Add(time.Hour),
 		GitLabTokenResolver: func(_ context.Context, projectID, _ string) (string, error) {
 			if projectID != "123" {
 				return "", errors.New("unknown project")
@@ -410,6 +411,7 @@ func TestGitLabNoteHookReturnsServiceUnavailableForMembershipFailures(t *testing
 		ControlPlaneURL:            "https://control-plane.example",
 		ControlPlaneToken:          "control-plane-token",
 		ReceiverToken:              "receiver-token",
+		LegacyFallbackUntil:        time.Now().UTC().Add(time.Hour),
 		GitLabTokenResolver:        func(context.Context, string, string) (string, error) { return "gitlab-token", nil },
 		GitLabMemberAccessResolver: func(context.Context, string, string) (int, error) { return 0, errors.New("GitLab unavailable") },
 		RequestTimeout:             time.Second,
@@ -454,10 +456,11 @@ func TestGitLabWebhookRejectsTokenForAnotherProject(t *testing.T) {
 	}))
 	defer controlPlane.Close()
 	application, err := New(Config{
-		Addr:              ":8080",
-		ControlPlaneURL:   controlPlane.URL,
-		ControlPlaneToken: "control-plane-token",
-		ReceiverToken:     "receiver-token",
+		Addr:                ":8080",
+		ControlPlaneURL:     controlPlane.URL,
+		ControlPlaneToken:   "control-plane-token",
+		ReceiverToken:       "receiver-token",
+		LegacyFallbackUntil: time.Now().UTC().Add(time.Hour),
 		GitLabTokenResolver: func(_ context.Context, projectID, _ string) (string, error) {
 			if projectID != "project-a" {
 				return "", errors.New("unknown project")
@@ -562,6 +565,7 @@ func newTestServer(t *testing.T, controlPlaneURL string) *Server {
 		ControlPlaneURL:     controlPlaneURL,
 		ControlPlaneToken:   "control-plane-token",
 		ReceiverToken:       "receiver-token",
+		LegacyFallbackUntil: time.Now().UTC().Add(time.Hour),
 		GitHubWebhookSecret: "github-secret",
 		GitLabTokenResolver: func(_ context.Context, projectID, _ string) (string, error) {
 			if projectID != "9" {
