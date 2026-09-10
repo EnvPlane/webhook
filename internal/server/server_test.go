@@ -227,6 +227,7 @@ func TestGitHubIssueCommentWebhookSubmitsCommand(t *testing.T) {
 
 func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	var received scm.PullRequestEvent
+	var externalProbeForwarded atomic.Bool
 	expectedKey := "gitlab-delivery-7"
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/webhook-receiver/gitlab" || r.Header.Get("Authorization") != "Bearer receiver-token" {
@@ -244,6 +245,9 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 		if r.Header.Get("X-EnvPlane-Webhook-Probe") == "true" && (r.Header.Get("X-Gitlab-Project-ID") != "9" || r.Header.Get("X-Gitlab-Event") != "Merge Request Hook" || r.Header.Get("X-EnvPlane-Delivery-Nonce") != "probe-7") {
 			http.Error(w, "missing webhook correlation headers", http.StatusBadRequest)
 			return
+		}
+		if r.Header.Get("X-Gitlab-Event-UUID") == "external-probe" && r.Header.Get("X-EnvPlane-Webhook-Probe") == "true" {
+			externalProbeForwarded.Store(true)
 		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -269,11 +273,25 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	req.Header.Set("X-Gitlab-Event-UUID", "gitlab-delivery-7")
 	req.Header.Set("X-EnvPlane-Webhook-Probe", "true")
 	req.Header.Set("X-EnvPlane-Delivery-Nonce", "probe-7")
+	req.Header.Set("X-EnvPlane-Probe-Authorization", "receiver-token")
 	rec := httptest.NewRecorder()
 	application.Routes().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK || received.Provider != scm.ProviderGitLab || received.ChangeID != "7" || received.EventID != "gitlab-delivery-7" {
 		t.Fatalf("response=%d event=%#v body=%s", rec.Code, received, rec.Body.String())
+	}
+	external := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
+	external.Header.Set("X-Gitlab-Event", "Merge Request Hook")
+	external.Header.Set("X-Gitlab-Token", "gitlab-token")
+	external.Header.Set("X-Gitlab-Event-UUID", "external-probe")
+	external.Header.Set("X-EnvPlane-Webhook-Probe", "true")
+	external.Header.Set("X-EnvPlane-Delivery-Nonce", "attacker-nonce")
+	external.Header.Set("X-EnvPlane-Probe-Authorization", "wrong")
+	expectedKey = "external-probe"
+	externalRec := httptest.NewRecorder()
+	application.Routes().ServeHTTP(externalRec, external)
+	if externalRec.Code != http.StatusOK || externalProbeForwarded.Load() {
+		t.Fatalf("external probe forwarding=%v status=%d body=%s", externalProbeForwarded.Load(), externalRec.Code, externalRec.Body.String())
 	}
 	legacy := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
 	legacy.Header.Set("X-Gitlab-Event", "Merge Request Hook")
@@ -287,6 +305,7 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	duplicate.Header.Set("X-Gitlab-Event", "Merge Request Hook")
 	duplicate.Header.Set("X-Gitlab-Token", "gitlab-token")
 	duplicate.Header.Set("X-Gitlab-Event-UUID", "gitlab-delivery-7")
+	expectedKey = "gitlab-delivery-7"
 	duplicateRec := httptest.NewRecorder()
 	application.Routes().ServeHTTP(duplicateRec, duplicate)
 	if duplicateRec.Code != http.StatusOK || !strings.Contains(duplicateRec.Body.String(), "accepted") {

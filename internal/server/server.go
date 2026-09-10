@@ -455,6 +455,7 @@ func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
 func (s *Server) submitGitLabRaw(w http.ResponseWriter, r *http.Request, body []byte, event scm.PullRequestEvent) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
 	defer cancel()
+	probe, nonce := s.authorizedProbeHeaders(r)
 	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+"/api/v1/webhook-receiver/gitlab", body, map[string]string{
 		"Authorization":             "Bearer " + s.cfg.ReceiverToken,
 		"Content-Type":              "application/json",
@@ -462,8 +463,8 @@ func (s *Server) submitGitLabRaw(w http.ResponseWriter, r *http.Request, body []
 		"X-Gitlab-Event-UUID":       r.Header.Get("X-Gitlab-Event-UUID"),
 		"X-Gitlab-Event":            r.Header.Get("X-Gitlab-Event"),
 		"X-Gitlab-Project-ID":       event.InstallationID,
-		"X-EnvPlane-Webhook-Probe":  r.Header.Get("X-EnvPlane-Webhook-Probe"),
-		"X-EnvPlane-Delivery-Nonce": r.Header.Get("X-EnvPlane-Delivery-Nonce"),
+		"X-EnvPlane-Webhook-Probe":  probe,
+		"X-EnvPlane-Delivery-Nonce": nonce,
 		"Idempotency-Key":           strings.TrimSpace(event.EventID),
 	})
 	if err != nil {
@@ -482,6 +483,7 @@ func (s *Server) submitGitLabRaw(w http.ResponseWriter, r *http.Request, body []
 func (s *Server) submitGitLabRawCommand(w http.ResponseWriter, r *http.Request, body []byte, command scm.PullRequestCommand) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
 	defer cancel()
+	probe, nonce := s.authorizedProbeHeaders(r)
 	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+"/api/v1/webhook-receiver/gitlab-command", body, map[string]string{
 		"Authorization":             "Bearer " + s.cfg.ReceiverToken,
 		"Content-Type":              "application/json",
@@ -489,8 +491,8 @@ func (s *Server) submitGitLabRawCommand(w http.ResponseWriter, r *http.Request, 
 		"X-Gitlab-Event-UUID":       r.Header.Get("X-Gitlab-Event-UUID"),
 		"X-Gitlab-Event":            r.Header.Get("X-Gitlab-Event"),
 		"X-Gitlab-Project-ID":       command.InstallationID,
-		"X-EnvPlane-Webhook-Probe":  r.Header.Get("X-EnvPlane-Webhook-Probe"),
-		"X-EnvPlane-Delivery-Nonce": r.Header.Get("X-EnvPlane-Delivery-Nonce"),
+		"X-EnvPlane-Webhook-Probe":  probe,
+		"X-EnvPlane-Delivery-Nonce": nonce,
 		"Idempotency-Key":           strings.TrimSpace(command.EventID),
 	})
 	if err != nil {
@@ -504,6 +506,20 @@ func (s *Server) submitGitLabRawCommand(w http.ResponseWriter, r *http.Request, 
 	}
 	s.recordForward(string(scm.ProviderGitLab), time.Now())
 	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
+}
+
+func (s *Server) authorizedProbeHeaders(r *http.Request) (string, string) {
+	if !strings.EqualFold(strings.TrimSpace(r.Header.Get("X-EnvPlane-Webhook-Probe")), "true") {
+		return "", ""
+	}
+	if !validGitLabToken(s.cfg.ReceiverToken, r.Header.Get("X-EnvPlane-Probe-Authorization")) {
+		return "", ""
+	}
+	nonce := strings.TrimSpace(r.Header.Get("X-EnvPlane-Delivery-Nonce"))
+	if nonce == "" {
+		return "", ""
+	}
+	return "true", nonce
 }
 
 // The replay cache is process-local. Multi-replica deployments need sticky routing
