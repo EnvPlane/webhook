@@ -57,11 +57,11 @@ URLs until a signed test delivery reaches the new receiver. Rolling back is
 safe: retain the managed Secret and restore the previous receiver deployment
 before changing the provider callback URL.
 
-GitLab Note Hook author membership checks still use the GitLab API token in the
-receiver, with the minimum `read_api` scope and access limited to the served
-groups and projects. This token is separate from the per-project signing
-secret. A Note Hook is accepted only after membership authorization and raw
-forwarding; the control-plane then performs the signing-secret check.
+GitLab Note Hook author membership checks run in the control plane after the
+per-project signing-secret check. The public receiver does not carry a
+`ENVPLANE_GITLAB_API_TOKEN`, does not call the GitLab Member API, and does not
+trust an author access-level header. The control-plane GitLab API credential
+needs the minimum `read_api` scope when Note Hooks are enabled.
 
 ## GitLab signing-secret migration
 
