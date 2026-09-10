@@ -52,6 +52,9 @@ type Config struct {
 	RateLimitBurst             int
 	ControlPlaneRetries        int
 	RetryBackoff               time.Duration
+	// LegacyFallbackUntil is the explicit removal deadline for deployments that
+	// still use the legacy control-plane token path.
+	LegacyFallbackUntil time.Time
 }
 
 func ConfigFromEnv() Config {
@@ -62,6 +65,12 @@ func ConfigFromEnv() Config {
 	requestTimeout := durationFromEnv("ENVPLANE_WEBHOOK_REQUEST_TIMEOUT", 10*time.Second)
 	controlPlaneRetries := intFromEnv("ENVPLANE_WEBHOOK_CONTROL_PLANE_RETRIES", 3)
 	retryBackoff := durationFromEnv("ENVPLANE_WEBHOOK_RETRY_BACKOFF", 100*time.Millisecond)
+	legacyFallbackUntil := time.Time{}
+	if raw := strings.TrimSpace(os.Getenv("ENVPLANE_WEBHOOK_LEGACY_FALLBACK_UNTIL")); raw != "" {
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+			legacyFallbackUntil = parsed
+		}
+	}
 	return Config{
 		Addr:                       envOrDefault("ENVPLANE_WEBHOOK_ADDR", ":8080"),
 		ControlPlaneURL:            strings.TrimRight(strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_URL")), "/"),
@@ -79,6 +88,7 @@ func ConfigFromEnv() Config {
 		RateLimitBurst:             intFromEnv("ENVPLANE_WEBHOOK_RATE_LIMIT_BURST", defaultRateBurst),
 		ControlPlaneRetries:        controlPlaneRetries,
 		RetryBackoff:               retryBackoff,
+		LegacyFallbackUntil:        legacyFallbackUntil,
 	}
 }
 
@@ -192,8 +202,11 @@ func (c Config) Validate() error {
 	if !strings.HasPrefix(c.ControlPlaneURL, "http://") && !strings.HasPrefix(c.ControlPlaneURL, "https://") {
 		return fmt.Errorf("ENVPLANE_CONTROL_PLANE_URL must be an HTTP(S) URL")
 	}
-	if strings.TrimSpace(c.ReceiverToken) == "" {
+	if strings.TrimSpace(c.ReceiverToken) == "" && !c.legacyFallbackAllowed(time.Now().UTC()) {
 		return fmt.Errorf("ENVPLANE_WEBHOOK_RECEIVER_TOKEN is required")
+	}
+	if c.GitLabTokenResolver != nil && !c.legacyFallbackAllowed(time.Now().UTC()) {
+		return fmt.Errorf("legacy local GitLab verification deadline has expired; use control-plane forwarding")
 	}
 	if c.RequestTimeout <= 0 {
 		return fmt.Errorf("webhook request timeout must be positive")
@@ -217,6 +230,10 @@ func (c Config) Validate() error {
 		return fmt.Errorf("webhook retry backoff must not be negative")
 	}
 	return nil
+}
+
+func (c Config) legacyFallbackAllowed(now time.Time) bool {
+	return !c.LegacyFallbackUntil.IsZero() && now.Before(c.LegacyFallbackUntil)
 }
 
 type Server struct {
@@ -712,9 +729,12 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRe
 	defer cancel()
 	endpoint := "/api/v1/webhook-receiver/events"
 	token := strings.TrimSpace(s.cfg.ReceiverToken)
-	// The fallback preserves existing manually configured receiver deployments
-	// during migration. Helm-managed deployments always set ReceiverToken.
 	if token == "" {
+		if !s.cfg.legacyFallbackAllowed(time.Now().UTC()) {
+			s.recordDelivery(string(event.Provider), "legacy_fallback_expired")
+			writeError(w, http.StatusServiceUnavailable, errors.New("legacy control-plane fallback has expired"))
+			return
+		}
 		endpoint = "/api/v1/jobs"
 		token = s.cfg.ControlPlaneToken
 	}

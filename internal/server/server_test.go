@@ -525,6 +525,34 @@ func TestConfigFromEnvResolvesGitLabTokenByProject(t *testing.T) {
 	}
 }
 
+func TestConfigRejectsExpiredLegacyFallback(t *testing.T) {
+	cfg := Config{
+		Addr: ":8080", ControlPlaneURL: "https://api.example", ControlPlaneToken: "legacy",
+		LegacyFallbackUntil: time.Now().UTC().Add(-time.Minute), RequestTimeout: time.Second,
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected expired legacy fallback to be rejected")
+	}
+}
+
+func TestConfigAllowsExplicitLegacyFallbackBeforeDeadline(t *testing.T) {
+	cfg := Config{
+		Addr: ":8080", ControlPlaneURL: "https://api.example", ControlPlaneToken: "legacy",
+		LegacyFallbackUntil: time.Now().UTC().Add(time.Minute), RequestTimeout: time.Second,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected explicit compatibility fallback to be accepted: %v", err)
+	}
+}
+
+func TestConfigFromEnvReadsLegacyFallbackDeadline(t *testing.T) {
+	t.Setenv("ENVPLANE_WEBHOOK_LEGACY_FALLBACK_UNTIL", "2099-01-01T00:00:00Z")
+	cfg := ConfigFromEnv()
+	if cfg.LegacyFallbackUntil.IsZero() || cfg.LegacyFallbackUntil.Year() != 2099 {
+		t.Fatalf("unexpected legacy fallback deadline: %v", cfg.LegacyFallbackUntil)
+	}
+}
+
 func newTestServer(t *testing.T, controlPlaneURL string) *Server {
 	t.Helper()
 	application, err := New(Config{
