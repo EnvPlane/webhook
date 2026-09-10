@@ -63,6 +63,22 @@ groups and projects. This token is separate from the per-project signing
 secret. A Note Hook is accepted only after membership authorization and raw
 forwarding; the control-plane then performs the signing-secret check.
 
+## GitLab signing-secret migration
+
+GitLab signing secrets remain encrypted in the control plane and are never
+loaded into the public webhook receiver pod. The receiver forwards the raw
+GitLab body together with `X-Gitlab-Token` to the receiver-only control-plane
+endpoint, where the project binding and token are checked in constant time.
+`ENVPLANE_GITLAB_WEBHOOK_TOKENS` is not required for this mode and should not be
+set in the umbrella deployment. This is a breaking change for installations
+that relied on local receiver-side GitLab token validation: configure
+`ENVPLANE_CONTROL_PLANE_URL` and `ENVPLANE_WEBHOOK_RECEIVER_TOKEN` instead.
+
+The control plane accepts the current signing secret and the previous secret
+only during the configured rotation window. Rotate and reconcile the GitLab
+hook without restarting the receiver. The receiver's status endpoint exposes
+only safe state and fingerprints, never the signing secret.
+
 ## Status
 
 Private EnvPlane platform component under active development.
