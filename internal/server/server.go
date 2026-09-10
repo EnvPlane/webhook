@@ -92,15 +92,6 @@ func ConfigFromEnv() Config {
 	}
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value = strings.TrimSpace(value); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func gitLabMemberAccessResolverFromEnv(timeout time.Duration, retries int, backoff time.Duration) func(context.Context, string, string) (int, error) {
 	token := strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_API_TOKEN"))
 	if token == "" {
@@ -651,24 +642,6 @@ func (s *Server) rejectReplay(w http.ResponseWriter, r *http.Request, provider, 
 	return false
 }
 
-func (s *Server) validGitLabRequest(r *http.Request, projectID, projectPath string) bool {
-	if s.cfg.GitLabTokenResolver == nil {
-		return false
-	}
-	want, err := s.cfg.GitLabTokenResolver(r.Context(), strings.TrimSpace(projectID), strings.TrimSpace(projectPath))
-	if err != nil {
-		s.logger.Warn("GitLab webhook token resolution failed", "project_id", projectID, "error", err)
-		return false
-	}
-	return validGitLabToken(want, r.Header.Get("X-Gitlab-Token"))
-}
-
-func (s *Server) rejectGitLabToken(w http.ResponseWriter, r *http.Request) {
-	s.recordDelivery(string(scm.ProviderGitLab), "invalid_signature")
-	s.logRejection(r, string(scm.ProviderGitLab), "invalid_signature", strings.TrimSpace(r.Header.Get("X-Gitlab-Event")))
-	writeError(w, http.StatusUnauthorized, errors.New("invalid webhook token"))
-}
-
 func (s *Server) doControlPlaneRequest(ctx context.Context, endpoint string, payload []byte, headers map[string]string) (*http.Response, error) {
 	for attempt := 0; attempt < s.cfg.ControlPlaneRetries; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
@@ -772,13 +745,6 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRe
 	s.logger.Info("webhook job submitted", "provider", event.Provider, "event_id", event.EventID, "repository", event.Repo, "change_id", event.ChangeID)
 	s.recordForward(string(event.Provider), started)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "accepted", "jobId": job.ID})
-}
-
-func validateEvent(event scm.PullRequestEvent) error {
-	if strings.TrimSpace(event.Repo) == "" || strings.TrimSpace(event.ChangeID) == "" {
-		return errors.New("webhook event repository and change id are required")
-	}
-	return nil
 }
 
 func validateCommand(command scm.PullRequestCommand) error {
