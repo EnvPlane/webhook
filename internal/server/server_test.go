@@ -539,6 +539,8 @@ func TestConfigAllowsExplicitLegacyFallbackBeforeDeadline(t *testing.T) {
 	cfg := Config{
 		Addr: ":8080", ControlPlaneURL: "https://api.example", ControlPlaneToken: "legacy",
 		LegacyFallbackUntil: time.Now().UTC().Add(time.Minute), RequestTimeout: time.Second,
+		ReadyStaleAfter: time.Minute, ReplayTTL: time.Minute, RateLimitPerSecond: 1,
+		RateLimitBurst: 1, ControlPlaneRetries: 1,
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected explicit compatibility fallback to be accepted: %v", err)
