@@ -233,6 +233,10 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 			http.Error(w, "unexpected receiver request", http.StatusBadRequest)
 			return
 		}
+		if r.Header.Get("X-Gitlab-Event-UUID") == "" {
+			http.Error(w, "delivery id is required", http.StatusBadRequest)
+			return
+		}
 		if got := r.Header.Get("Idempotency-Key"); got != expectedKey {
 			http.Error(w, "unexpected idempotency key", http.StatusBadRequest)
 			return
@@ -253,9 +257,6 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 		}
 		received = parsed
 		received.EventID = r.Header.Get("X-Gitlab-Event-UUID")
-		if received.EventID == "" {
-			received.EventID = received.DeduplicationKey()
-		}
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = io.WriteString(w, `{"id":"job-7"}`)
 	}))
@@ -277,13 +278,11 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	legacy := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
 	legacy.Header.Set("X-Gitlab-Event", "Merge Request Hook")
 	legacy.Header.Set("X-Gitlab-Token", "gitlab-token")
-	expectedKey = "gitlab|group/repo|open|7"
 	legacyRec := httptest.NewRecorder()
 	application.Routes().ServeHTTP(legacyRec, legacy)
-	if legacyRec.Code != http.StatusOK || received.EventID != "gitlab|group/repo|open|7" {
+	if legacyRec.Code != http.StatusBadRequest {
 		t.Fatalf("legacy response=%d event_id=%q body=%s", legacyRec.Code, received.EventID, legacyRec.Body.String())
 	}
-	expectedKey = "gitlab-delivery-7"
 	duplicate := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
 	duplicate.Header.Set("X-Gitlab-Event", "Merge Request Hook")
 	duplicate.Header.Set("X-Gitlab-Token", "gitlab-token")
