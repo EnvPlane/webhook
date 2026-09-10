@@ -79,6 +79,14 @@ only during the configured rotation window. Rotate and reconcile the GitLab
 hook without restarting the receiver. The receiver's status endpoint exposes
 only safe state and fingerprints, never the signing secret.
 
+For an existing installation, use the deploy repository's read-only
+`scripts/scm-webhook-migration-preflight.sh` before changing the provider URL.
+It reports Secret key names and public endpoint state without reading Secret
+values. The compatibility fallback is explicit and expires at
+`2026-12-31T23:59:59Z` through `ENVPLANE_WEBHOOK_LEGACY_FALLBACK_UNTIL`;
+after that date the dedicated receiver token is required and the old fallback
+must be removed.
+
 ## Status
 
 Private EnvPlane platform component under active development.
