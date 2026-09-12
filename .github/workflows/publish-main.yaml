@@ -78,7 +78,8 @@ jobs:
           tags: |
             type=raw,value=sha-${{ github.sha }}
             type=semver,pattern={{version}}
-      - uses: docker/build-push-action@v7
+      - id: build
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -100,3 +101,84 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: '1'
+      - id: published
+        name: Emit immutable image metadata
+        env:
+          COMPONENT: webhook
+          REPOSITORY: ghcr.io/envplane/webhook
+          TAG: sha-${{ github.sha }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$DIGEST"
+          metadata="$(jq -cn \
+            --arg component "$COMPONENT" \
+            --arg repository "$REPOSITORY" \
+            --arg tag "$TAG" \
+            --arg digest "$DIGEST" \
+            '{component: $component, repository: $repository, tag: $tag, digest: $digest}')"
+          {
+            echo "component=$COMPONENT"
+            echo "repository=$REPOSITORY"
+            echo "tag=$TAG"
+            echo "digest=$DIGEST"
+            echo "metadata=$metadata"
+          } >> "$GITHUB_OUTPUT"
+      - id: dispatch_auth
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        name: Select deploy dispatch authentication
+        env:
+          CLIENT_ID: ${{ secrets.ENVPLANE_AUTOMATION_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.ENVPLANE_AUTOMATION_APP_PRIVATE_KEY }}
+          FALLBACK_PAT: ${{ secrets.ENVPLANE_AUTOMATION_PAT }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$CLIENT_ID" && -n "$APP_PRIVATE_KEY" ]]; then
+            echo "method=app" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$FALLBACK_PAT" ]]; then
+            echo "method=pat" >> "$GITHUB_OUTPUT"
+          else
+            echo "No deploy-dispatch GitHub App credentials or fallback PAT is configured." >&2
+            exit 1
+          fi
+      - id: deploy_dispatch_app
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && steps.dispatch_auth.outputs.method == 'app'
+        env:
+          ENVPLANE_AUTOMATION_APP_CLIENT_ID: ${{ secrets.ENVPLANE_AUTOMATION_APP_CLIENT_ID }}
+          ENVPLANE_AUTOMATION_APP_PRIVATE_KEY: ${{ secrets.ENVPLANE_AUTOMATION_APP_PRIVATE_KEY }}
+          GH_APP_OWNER: ${{ github.repository_owner }}
+          GH_APP_REPOSITORY: deploy
+          GH_APP_TOKEN_PERMISSIONS: '{"contents":"write"}'
+        run: ./scripts/obtain-github-app-token.sh
+      - name: Dispatch immutable image update with GitHub App
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && steps.dispatch_auth.outputs.method == 'app'
+        env:
+          GH_TOKEN: ${{ steps.deploy_dispatch_app.outputs.token }}
+          METADATA: ${{ steps.published.outputs.metadata }}
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            --retry 6 --retry-delay 5 --retry-max-time 120 \
+            --request POST \
+            --url "https://api.github.com/repos/${{ github.repository_owner }}/deploy/dispatches" \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --data "$(jq -cn --argjson payload "$METADATA" --arg source_repository "${{ github.repository }}" --arg source_revision "${{ github.sha }}" '{event_type:"component-image-published",client_payload:($payload + {source_repository:$source_repository,source_revision:$source_revision,publication_id:($payload.component + ":" + $source_revision + ":" + $payload.digest)})}')"
+      - name: Dispatch immutable image update with PAT fallback
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && steps.dispatch_auth.outputs.method == 'pat'
+        env:
+          GH_TOKEN: ${{ secrets.ENVPLANE_AUTOMATION_PAT }}
+          METADATA: ${{ steps.published.outputs.metadata }}
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            --retry 6 --retry-delay 5 --retry-max-time 120 \
+            --request POST \
+            --url "https://api.github.com/repos/${{ github.repository_owner }}/deploy/dispatches" \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --data "$(jq -cn --argjson payload "$METADATA" --arg source_repository "${{ github.repository }}" --arg source_revision "${{ github.sha }}" '{event_type:"component-image-published",client_payload:($payload + {source_repository:$source_repository,source_revision:$source_revision,publication_id:($payload.component + ":" + $source_revision + ":" + $payload.digest)})}')"
