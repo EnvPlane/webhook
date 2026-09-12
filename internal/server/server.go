@@ -334,6 +334,10 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if strings.TrimSpace(s.cfg.ReceiverToken) != "" && strings.TrimSpace(s.cfg.GitHubWebhookSecret) == "" {
+		s.submitGitHubRaw(w, r, body)
+		return
+	}
 	if !validGitHubSignature(s.cfg.GitHubWebhookSecret, r.Header.Get("X-Hub-Signature-256"), body) {
 		s.recordDelivery(provider, "invalid_signature")
 		s.logRejection(r, provider, "invalid_signature", "")
@@ -392,6 +396,23 @@ func (s *Server) githubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.submit(w, r, event)
+}
+
+func (s *Server) submitGitHubRaw(w http.ResponseWriter, r *http.Request, body []byte) {
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
+	defer cancel()
+	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+"/api/v1/webhook-receiver/github", body, map[string]string{"Authorization": "Bearer " + s.cfg.ReceiverToken, "Content-Type": "application/json", "X-Hub-Signature-256": r.Header.Get("X-Hub-Signature-256"), "X-GitHub-Delivery": r.Header.Get("X-GitHub-Delivery"), "X-GitHub-Event": r.Header.Get("X-GitHub-Event")})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, errors.New("control-plane is unavailable"))
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		writeError(w, response.StatusCode, errors.New("GitHub delivery was rejected"))
+		return
+	}
+	s.recordForward(string(scm.ProviderGitHub), time.Now())
+	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 }
 
 func (s *Server) gitlabWebhook(w http.ResponseWriter, r *http.Request) {
