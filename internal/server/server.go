@@ -415,7 +415,7 @@ func (s *Server) submitGitHubRaw(w http.ResponseWriter, r *http.Request, body []
 		writeError(w, http.StatusBadGateway, errors.New("control-plane is unavailable"))
 		return
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		writeError(w, response.StatusCode, errors.New("GitHub delivery was rejected"))
 		return
