@@ -6,3 +6,5 @@ github.com/envplane/contracts v0.1.84 h1:YVto8sMcKJ4FD8stG4bVo1DKg1M+oU+kwzchGJ/
 github.com/envplane/contracts v0.1.84/go.mod h1:/aVUc5NCmh/amgea7odPI1YxjxLf2dfFDvuOieTUgYs=
 github.com/envplane/contracts v0.1.85 h1:1VmoEdowYUU1SzdjRc0uTg8VmFpNu6bcyjNi26bWOcw=
 github.com/envplane/contracts v0.1.85/go.mod h1:/aVUc5NCmh/amgea7odPI1YxjxLf2dfFDvuOieTUgYs=
+github.com/envplane/contracts v0.1.86 h1:L9DYm68MTErWrs5ytirDhY4P6JMGzuEOcQxGMjFCgko=
+github.com/envplane/contracts v0.1.86/go.mod h1:/aVUc5NCmh/amgea7odPI1YxjxLf2dfFDvuOieTUgYs=
