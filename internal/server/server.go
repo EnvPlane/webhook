@@ -68,7 +68,7 @@ func ConfigFromEnv() Config {
 		}
 	}
 	return Config{
-		Addr:                envOrDefault("ENVPLANE_WEBHOOK_ADDR", ":8080"),
+		Addr: envOrDefault("ENVPLANE_WEBHOOK_ADDR", ":8080"),
 		// ENVPILOT_* is accepted only as a migration alias for webhook images
 		// deployed before the product rename. Canonical ENVPLANE_* values always
 		// take precedence, so a mixed deployment cannot accidentally use stale
@@ -301,11 +301,35 @@ func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("X-EnvPlane-Webhook-Receiver", "v1")
 	lastSuccess := atomic.LoadInt64(&s.lastControlPlaneSuccess)
 	last := time.Unix(0, lastSuccess)
+	// A fresh receiver has not forwarded an SCM delivery yet. Requiring a
+	// forwarded event before becoming ready makes the Service endpoint-less,
+	// preventing that first event from ever reaching it. Probe the unauthenticated
+	// control-plane health endpoint instead and treat it as connectivity evidence.
+	if (lastSuccess == 0 || time.Since(last) > s.cfg.ReadyStaleAfter) && s.controlPlaneHealthy() {
+		atomic.StoreInt64(&s.lastControlPlaneSuccess, time.Now().UnixNano())
+		lastSuccess = atomic.LoadInt64(&s.lastControlPlaneSuccess)
+		last = time.Unix(0, lastSuccess)
+	}
 	if lastSuccess == 0 || time.Since(last) > s.cfg.ReadyStaleAfter {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+func (s *Server) controlPlaneHealthy() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.RequestTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.ControlPlaneURL+"/api/v1/health", nil)
+	if err != nil {
+		return false
+	}
+	response, err := s.client.Do(request)
+	if err != nil {
+		return false
+	}
+	defer response.Body.Close()
+	return response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
 }
 
 func (s *Server) recordDelivery(provider, outcome string) {

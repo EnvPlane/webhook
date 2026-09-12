@@ -98,8 +98,8 @@ func TestGitHubWebhookRejectsInvalidSignatureWithoutSubmission(t *testing.T) {
 	}
 	ready := httptest.NewRecorder()
 	application.Routes().ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if ready.Code != http.StatusServiceUnavailable {
-		t.Fatalf("readyz before successful forward = %d", ready.Code)
+	if ready.Code != http.StatusOK {
+		t.Fatalf("readyz with a healthy control plane = %d", ready.Code)
 	}
 }
 
@@ -549,6 +549,38 @@ func TestConfigFromEnvSupportsEnvPilotMigrationAliases(t *testing.T) {
 	cfg := ConfigFromEnv()
 	if cfg.ControlPlaneURL != "https://legacy.example" || cfg.ControlPlaneToken != "legacy-token" || cfg.GitHubWebhookSecret != "legacy-secret" {
 		t.Fatalf("migration aliases were not applied: %#v", cfg)
+	}
+}
+
+func TestReadyChecksControlPlaneBeforeFirstDelivery(t *testing.T) {
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/health" {
+			http.Error(w, "unexpected health probe", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer controlPlane.Close()
+
+	application, err := New(Config{
+		Addr:                ":8080",
+		ControlPlaneURL:     controlPlane.URL,
+		ReceiverToken:       "receiver-token",
+		RequestTimeout:      time.Second,
+		ReadyStaleAfter:     time.Minute,
+		ReplayTTL:           time.Minute,
+		RateLimitPerSecond:  1,
+		RateLimitBurst:      1,
+		ControlPlaneRetries: 1,
+	}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	application.ready(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("ready status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
