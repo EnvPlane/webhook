@@ -69,10 +69,14 @@ func ConfigFromEnv() Config {
 	}
 	return Config{
 		Addr:                envOrDefault("ENVPLANE_WEBHOOK_ADDR", ":8080"),
-		ControlPlaneURL:     strings.TrimRight(strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_URL")), "/"),
-		ControlPlaneToken:   strings.TrimSpace(os.Getenv("ENVPLANE_CONTROL_PLANE_TOKEN")),
+		// ENVPILOT_* is accepted only as a migration alias for webhook images
+		// deployed before the product rename. Canonical ENVPLANE_* values always
+		// take precedence, so a mixed deployment cannot accidentally use stale
+		// credentials.
+		ControlPlaneURL:     strings.TrimRight(envOrLegacy("ENVPLANE_CONTROL_PLANE_URL", "ENVPILOT_CONTROL_PLANE_URL"), "/"),
+		ControlPlaneToken:   envOrLegacy("ENVPLANE_CONTROL_PLANE_TOKEN", "ENVPILOT_CONTROL_PLANE_TOKEN"),
 		ReceiverToken:       strings.TrimSpace(os.Getenv("ENVPLANE_WEBHOOK_RECEIVER_TOKEN")),
-		GitHubWebhookSecret: strings.TrimSpace(os.Getenv("ENVPLANE_GITHUB_WEBHOOK_SECRET")),
+		GitHubWebhookSecret: envOrLegacy("ENVPLANE_GITHUB_WEBHOOK_SECRET", "ENVPILOT_GITHUB_WEBHOOK_SECRET"),
 		GitLabTokenResolver: gitLabResolver,
 		RequestTimeout:      requestTimeout,
 		ReadyStaleAfter:     durationFromEnv("ENVPLANE_WEBHOOK_READY_STALE_AFTER", 2*time.Minute),
@@ -822,6 +826,13 @@ func envOrDefault(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envOrLegacy(canonical, legacy string) string {
+	if value := strings.TrimSpace(os.Getenv(canonical)); value != "" {
+		return value
+	}
+	return strings.TrimSpace(os.Getenv(legacy))
 }
 
 func durationFromEnv(key string, fallback time.Duration) time.Duration {

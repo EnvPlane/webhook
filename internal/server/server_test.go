@@ -521,6 +521,37 @@ func TestConfigFromEnvReadsLegacyFallbackDeadline(t *testing.T) {
 	}
 }
 
+func TestConfigFromEnvPrefersCanonicalValuesOverEnvPilotMigrationAliases(t *testing.T) {
+	t.Setenv("ENVPLANE_CONTROL_PLANE_URL", "https://canonical.example/")
+	t.Setenv("ENVPILOT_CONTROL_PLANE_URL", "https://legacy.example")
+	t.Setenv("ENVPLANE_CONTROL_PLANE_TOKEN", "canonical-token")
+	t.Setenv("ENVPILOT_CONTROL_PLANE_TOKEN", "legacy-token")
+	t.Setenv("ENVPLANE_GITHUB_WEBHOOK_SECRET", "canonical-secret")
+	t.Setenv("ENVPILOT_GITHUB_WEBHOOK_SECRET", "legacy-secret")
+
+	cfg := ConfigFromEnv()
+	if cfg.ControlPlaneURL != "https://canonical.example" {
+		t.Fatalf("control plane URL = %q, want canonical value", cfg.ControlPlaneURL)
+	}
+	if cfg.ControlPlaneToken != "canonical-token" {
+		t.Fatalf("control plane token = %q, want canonical value", cfg.ControlPlaneToken)
+	}
+	if cfg.GitHubWebhookSecret != "canonical-secret" {
+		t.Fatalf("GitHub secret = %q, want canonical value", cfg.GitHubWebhookSecret)
+	}
+}
+
+func TestConfigFromEnvSupportsEnvPilotMigrationAliases(t *testing.T) {
+	t.Setenv("ENVPILOT_CONTROL_PLANE_URL", "https://legacy.example/")
+	t.Setenv("ENVPILOT_CONTROL_PLANE_TOKEN", "legacy-token")
+	t.Setenv("ENVPILOT_GITHUB_WEBHOOK_SECRET", "legacy-secret")
+
+	cfg := ConfigFromEnv()
+	if cfg.ControlPlaneURL != "https://legacy.example" || cfg.ControlPlaneToken != "legacy-token" || cfg.GitHubWebhookSecret != "legacy-secret" {
+		t.Fatalf("migration aliases were not applied: %#v", cfg)
+	}
+}
+
 func newTestServer(t *testing.T, controlPlaneURL string) *Server {
 	t.Helper()
 	application, err := New(Config{
