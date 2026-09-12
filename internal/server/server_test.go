@@ -466,6 +466,53 @@ func TestConfigAllowsExplicitLegacyFallbackBeforeDeadline(t *testing.T) {
 	}
 }
 
+func TestNewWarnsWhenLegacyFallbackIsActive(t *testing.T) {
+	var logs bytes.Buffer
+	_, err := New(Config{
+		Addr: ":8080", ControlPlaneURL: "https://api.example", ControlPlaneToken: "legacy",
+		LegacyFallbackUntil: time.Now().UTC().Add(48 * time.Hour), RequestTimeout: time.Second,
+		ReadyStaleAfter: time.Minute, ReplayTTL: time.Minute, RateLimitPerSecond: 1,
+		RateLimitBurst: 1, ControlPlaneRetries: 1,
+	}, nil, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := logs.String(); !strings.Contains(got, "legacy webhook fallback is enabled") || !strings.Contains(got, "days_remaining=2") || !strings.Contains(got, "EP-WHR-007") {
+		t.Fatalf("missing legacy fallback startup warning: %s", got)
+	}
+}
+
+func TestLegacyFallbackRecordsDeliveryMetric(t *testing.T) {
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/jobs" || r.Header.Get("Authorization") != "Bearer legacy" {
+			http.Error(w, "unexpected legacy request", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer controlPlane.Close()
+	application, err := New(Config{
+		Addr: ":8080", ControlPlaneURL: controlPlane.URL, ControlPlaneToken: "legacy",
+		LegacyFallbackUntil: time.Now().UTC().Add(time.Hour), RequestTimeout: time.Second,
+		ReadyStaleAfter: time.Minute, ReplayTTL: time.Minute, RateLimitPerSecond: 1,
+		RateLimitBurst: 1, ControlPlaneRetries: 1,
+	}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	recorder := httptest.NewRecorder()
+	application.submit(recorder, request, scm.PullRequestEvent{Provider: scm.ProviderGitLab, EventID: "legacy-1"})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("legacy submission status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	metrics := httptest.NewRecorder()
+	application.Routes().ServeHTTP(metrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(metrics.Body.String(), `provider="gitlab",outcome="legacy_fallback"`) {
+		t.Fatalf("metrics do not contain legacy fallback outcome: %s", metrics.Body.String())
+	}
+}
+
 func TestConfigFromEnvReadsLegacyFallbackDeadline(t *testing.T) {
 	t.Setenv("ENVPLANE_WEBHOOK_LEGACY_FALLBACK_UNTIL", "2099-01-01T00:00:00Z")
 	cfg := ConfigFromEnv()

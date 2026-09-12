@@ -148,7 +148,12 @@ func (c Config) Validate() error {
 }
 
 func (c Config) legacyFallbackAllowed(now time.Time) bool {
+	// Removal is tracked by EP-WHR-007; do not extend this deadline without an approved removal plan.
 	return !c.LegacyFallbackUntil.IsZero() && now.Before(c.LegacyFallbackUntil)
+}
+
+func (c Config) legacyFallbackActive() bool {
+	return c.legacyFallbackAllowed(time.Now().UTC()) && (strings.TrimSpace(c.ReceiverToken) == "" || c.GitLabTokenResolver != nil)
 }
 
 type Server struct {
@@ -192,6 +197,10 @@ func New(cfg Config, client *http.Client, logger *slog.Logger) (*Server, error) 
 	}
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if cfg.legacyFallbackActive() {
+		remaining := time.Until(cfg.LegacyFallbackUntil)
+		logger.Warn("legacy webhook fallback is enabled and scheduled for removal", "removal_ticket", "EP-WHR-007", "deadline", cfg.LegacyFallbackUntil.Format(time.RFC3339), "days_remaining", int((remaining+24*time.Hour-1)/(24*time.Hour)), "after_deadline", "the receiver requires ENVPLANE_WEBHOOK_RECEIVER_TOKEN and local GitLab verification is unavailable")
 	}
 	return &Server{cfg: cfg, client: client, logger: logger, deliveries: map[string]uint64{}, recentDeliveries: map[string]time.Time{}, limiter: newRateLimiter(cfg.RateLimitPerSecond, cfg.RateLimitBurst)}, nil
 }
@@ -651,6 +660,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, event scm.PullRe
 		}
 		endpoint = "/api/v1/jobs"
 		token = s.cfg.ControlPlaneToken
+		s.recordDelivery(string(event.Provider), "legacy_fallback")
 	}
 	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+endpoint, payload, map[string]string{
 		"Authorization":               "Bearer " + token,

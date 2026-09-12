@@ -84,8 +84,11 @@ For an existing installation, use the deploy repository's read-only
 It reports Secret key names and public endpoint state without reading Secret
 values. The compatibility fallback is explicit and expires at
 `2026-12-31T23:59:59Z` through `ENVPLANE_WEBHOOK_LEGACY_FALLBACK_UNTIL`;
-after that date the dedicated receiver token is required and the old fallback
-must be removed.
+after that date the receiver refuses to start without the dedicated receiver
+token and local GitLab verification is unavailable. This is a migration path,
+not a supported operating mode. Its removal is tracked by EP-WHR-007; monitor
+`webhook_deliveries_total{outcome="legacy_fallback"}` and migrate before the
+deadline.
 
 ## Status
 
