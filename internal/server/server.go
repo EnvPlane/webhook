@@ -328,8 +328,8 @@ func (s *Server) controlPlaneHealthy() bool {
 	if err != nil {
 		return false
 	}
-	defer response.Body.Close()
-	return response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
+	healthy := response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
+	return healthy && response.Body.Close() == nil
 }
 
 func (s *Server) recordDelivery(provider, outcome string) {
