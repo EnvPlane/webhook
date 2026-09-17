@@ -214,10 +214,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /livez", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
+	// Keep the externally documented control-plane callback contract stable
+	// when the standalone receiver is published by the umbrella chart.
+	mux.HandleFunc("GET /api/v1/webhook-receiver/readyz", s.ready)
 	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.Handle("POST /api/v1/webhooks/github", s.rateLimit(http.HandlerFunc(s.githubWebhook)))
 	mux.Handle("POST /webhook/github", s.rateLimit(http.HandlerFunc(s.githubWebhook)))
 	mux.Handle("POST /api/v1/webhooks/gitlab", s.rateLimit(http.HandlerFunc(s.gitlabWebhook)))
+	mux.Handle("POST /api/v1/webhook-receiver/gitlab", s.rateLimit(http.HandlerFunc(s.gitlabWebhook)))
 	return mux
 }
 

@@ -24,6 +24,10 @@ import (
 func TestGitHubWebhookValidatesSignatureAndSubmitsNormalizedJob(t *testing.T) {
 	var submissions atomic.Int32
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		submissions.Add(1)
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/webhook-receiver/events" {
 			http.Error(w, "unexpected control-plane request", http.StatusBadRequest)
@@ -100,6 +104,41 @@ func TestGitHubWebhookRejectsInvalidSignatureWithoutSubmission(t *testing.T) {
 	application.Routes().ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if ready.Code != http.StatusOK {
 		t.Fatalf("readyz with a healthy control plane = %d", ready.Code)
+	}
+}
+
+func TestCanonicalControlPlaneReceiverRoutesRemainAvailable(t *testing.T) {
+	var submissions atomic.Int32
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/health" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		submissions.Add(1)
+		if r.URL.Path != "/api/v1/webhook-receiver/gitlab" {
+			http.Error(w, "unexpected control-plane route", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer controlPlane.Close()
+
+	application := newTestServer(t, controlPlane.URL)
+	ready := httptest.NewRecorder()
+	application.Routes().ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/api/v1/webhook-receiver/readyz", nil))
+	if ready.Code != http.StatusOK || ready.Header().Get("X-Envplane-Webhook-Receiver") != "v1" {
+		t.Fatalf("canonical ready status=%d header=%q body=%s", ready.Code, ready.Header().Get("X-Envplane-Webhook-Receiver"), ready.Body.String())
+	}
+
+	body := []byte(`{"object_kind":"merge_request","project":{"id":9,"path_with_namespace":"envplane/backend","web_url":"https://gitlab.com/envplane/backend"},"object_attributes":{"id":4,"iid":4,"action":"update","state":"opened","source_branch":"e2e/webhook","last_commit":{"id":"abc"}},"user":{"username":"tester"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhook-receiver/gitlab", bytes.NewReader(body))
+	req.Header.Set("X-Gitlab-Event", "Merge Request Hook")
+	req.Header.Set("X-Gitlab-Token", "gitlab-token")
+	req.Header.Set("X-Gitlab-Event-UUID", "canonical-gitlab-4")
+	rec := httptest.NewRecorder()
+	application.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || submissions.Load() != 1 {
+		t.Fatalf("canonical GitLab response=%d body=%s submissions=%d", rec.Code, rec.Body.String(), submissions.Load())
 	}
 }
 
