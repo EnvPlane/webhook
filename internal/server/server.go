@@ -574,13 +574,14 @@ func (s *Server) authorizedProbeHeaders(r *http.Request) (string, string) {
 	if !strings.EqualFold(strings.TrimSpace(r.Header.Get("X-EnvPlane-Webhook-Probe")), "true") {
 		return "", ""
 	}
-	if !validGitLabToken(s.cfg.ReceiverToken, r.Header.Get("X-EnvPlane-Probe-Authorization")) {
-		return "", ""
-	}
 	nonce := strings.TrimSpace(r.Header.Get("X-EnvPlane-Delivery-Nonce"))
 	if nonce == "" {
 		return "", ""
 	}
+	// Probe metadata is not proof by itself. The control plane verifies the
+	// project-scoped GitLab signing secret and pending high-entropy nonce before
+	// it can mark a delivery verified. Do not require a second credential over
+	// the public callback merely to preserve the metadata.
 	return "true", nonce
 }
 

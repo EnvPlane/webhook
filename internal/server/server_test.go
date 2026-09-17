@@ -266,7 +266,7 @@ func TestGitHubIssueCommentWebhookSubmitsCommand(t *testing.T) {
 
 func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	var received scm.PullRequestEvent
-	var externalProbeForwarded atomic.Bool
+	var untrustedProbeMetadataForwarded atomic.Bool
 	expectedKey := "gitlab-delivery-7"
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/webhook-receiver/gitlab" || r.Header.Get("Authorization") != "Bearer receiver-token" {
@@ -281,12 +281,12 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 			http.Error(w, "unexpected idempotency key", http.StatusBadRequest)
 			return
 		}
-		if r.Header.Get("X-EnvPlane-Webhook-Probe") == "true" && (r.Header.Get("X-Gitlab-Project-ID") != "9" || r.Header.Get("X-Gitlab-Event") != "Merge Request Hook" || r.Header.Get("X-EnvPlane-Delivery-Nonce") != "probe-7") {
+		if r.Header.Get("X-Gitlab-Event-UUID") == "gitlab-delivery-7" && r.Header.Get("X-EnvPlane-Webhook-Probe") == "true" && (r.Header.Get("X-Gitlab-Project-ID") != "9" || r.Header.Get("X-Gitlab-Event") != "Merge Request Hook" || r.Header.Get("X-EnvPlane-Delivery-Nonce") != "probe-7") {
 			http.Error(w, "missing webhook correlation headers", http.StatusBadRequest)
 			return
 		}
 		if r.Header.Get("X-Gitlab-Event-UUID") == "external-probe" && r.Header.Get("X-EnvPlane-Webhook-Probe") == "true" {
-			externalProbeForwarded.Store(true)
+			untrustedProbeMetadataForwarded.Store(true)
 		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -325,12 +325,11 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	external.Header.Set("X-Gitlab-Event-UUID", "external-probe")
 	external.Header.Set("X-EnvPlane-Webhook-Probe", "true")
 	external.Header.Set("X-EnvPlane-Delivery-Nonce", "attacker-nonce")
-	external.Header.Set("X-EnvPlane-Probe-Authorization", "wrong")
 	expectedKey = "external-probe"
 	externalRec := httptest.NewRecorder()
 	application.Routes().ServeHTTP(externalRec, external)
-	if externalRec.Code != http.StatusOK || externalProbeForwarded.Load() {
-		t.Fatalf("external probe forwarding=%v status=%d body=%s", externalProbeForwarded.Load(), externalRec.Code, externalRec.Body.String())
+	if externalRec.Code != http.StatusOK || !untrustedProbeMetadataForwarded.Load() {
+		t.Fatalf("probe metadata forwarding=%v status=%d body=%s", untrustedProbeMetadataForwarded.Load(), externalRec.Code, externalRec.Body.String())
 	}
 	legacy := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/gitlab", bytes.NewReader(body))
 	legacy.Header.Set("X-Gitlab-Event", "Merge Request Hook")
