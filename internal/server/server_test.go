@@ -281,11 +281,11 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 			http.Error(w, "unexpected idempotency key", http.StatusBadRequest)
 			return
 		}
-		if r.Header.Get("X-Gitlab-Event-UUID") == "gitlab-delivery-7" && r.Header.Get("X-EnvPlane-Webhook-Probe") == "true" && (r.Header.Get("X-Gitlab-Project-ID") != "9" || r.Header.Get("X-Gitlab-Event") != "Merge Request Hook" || r.Header.Get("X-EnvPlane-Delivery-Nonce") != "probe-7") {
+		if r.Header.Get("X-Gitlab-Event-UUID") == "gitlab-delivery-7" && r.Header.Get("X-envplane-webhook-probe") == "true" && (r.Header.Get("X-Gitlab-Project-ID") != "9" || r.Header.Get("X-Gitlab-Event") != "Merge Request Hook" || r.Header.Get("X-envplane-delivery-nonce") != "probe-7") {
 			http.Error(w, "missing webhook correlation headers", http.StatusBadRequest)
 			return
 		}
-		if r.Header.Get("X-Gitlab-Event-UUID") == "external-probe" && r.Header.Get("X-EnvPlane-Webhook-Probe") == "true" {
+		if r.Header.Get("X-Gitlab-Event-UUID") == "external-probe" && r.Header.Get("X-envplane-webhook-probe") == "true" {
 			untrustedProbeMetadataForwarded.Store(true)
 		}
 		body, err := io.ReadAll(r.Body)
@@ -310,8 +310,8 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	req.Header.Set("X-Gitlab-Event", "Merge Request Hook")
 	req.Header.Set("X-Gitlab-Token", "gitlab-token")
 	req.Header.Set("X-Gitlab-Event-UUID", "gitlab-delivery-7")
-	req.Header.Set("X-EnvPlane-Webhook-Probe", "true")
-	req.Header.Set("X-EnvPlane-Delivery-Nonce", "probe-7")
+	req.Header.Set("X-envplane-webhook-probe", "true")
+	req.Header.Set("X-envplane-delivery-nonce", "probe-7")
 	req.Header.Set("X-EnvPlane-Probe-Authorization", "receiver-token")
 	rec := httptest.NewRecorder()
 	application.Routes().ServeHTTP(rec, req)
@@ -323,8 +323,8 @@ func TestGitLabWebhookValidatesTokenAndSubmitsMergeRequest(t *testing.T) {
 	external.Header.Set("X-Gitlab-Event", "Merge Request Hook")
 	external.Header.Set("X-Gitlab-Token", "gitlab-token")
 	external.Header.Set("X-Gitlab-Event-UUID", "external-probe")
-	external.Header.Set("X-EnvPlane-Webhook-Probe", "true")
-	external.Header.Set("X-EnvPlane-Delivery-Nonce", "attacker-nonce")
+	external.Header.Set("X-envplane-webhook-probe", "true")
+	external.Header.Set("X-envplane-delivery-nonce", "attacker-nonce")
 	expectedKey = "external-probe"
 	externalRec := httptest.NewRecorder()
 	application.Routes().ServeHTTP(externalRec, external)
