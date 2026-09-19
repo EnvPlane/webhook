@@ -19,6 +19,7 @@ const (
 	CommandRecreate = internal.CommandRecreate
 	CommandDestroy  = internal.CommandDestroy
 	CommandPin      = internal.CommandPin
+	CommandAICreate = internal.CommandAICreate
 )
 
 func ParseGitHubPRCommand(body []byte) (PullRequestCommand, error) {

@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -40,6 +41,10 @@ type Config struct {
 	// webhook receiver endpoint. ControlPlaneToken remains for legacy commands.
 	ReceiverToken       string
 	GitHubWebhookSecret string
+	GitHubCommentToken  string
+	GitLabCommentToken  string
+	GitHubAPI           string
+	GitLabAPI           string
 	GitLabTokenResolver func(context.Context, string, string) (string, error)
 	RequestTimeout      time.Duration
 	ReadyStaleAfter     time.Duration
@@ -77,6 +82,10 @@ func ConfigFromEnv() Config {
 		ControlPlaneToken:   envOrLegacy("ENVPLANE_CONTROL_PLANE_TOKEN", "ENVPILOT_CONTROL_PLANE_TOKEN"),
 		ReceiverToken:       strings.TrimSpace(os.Getenv("ENVPLANE_WEBHOOK_RECEIVER_TOKEN")),
 		GitHubWebhookSecret: envOrLegacy("ENVPLANE_GITHUB_WEBHOOK_SECRET", "ENVPILOT_GITHUB_WEBHOOK_SECRET"),
+		GitHubCommentToken:  strings.TrimSpace(os.Getenv("ENVPLANE_GITHUB_COMMENT_TOKEN")),
+		GitLabCommentToken:  strings.TrimSpace(os.Getenv("ENVPLANE_GITLAB_COMMENT_TOKEN")),
+		GitHubAPI:           envOrDefault("ENVPLANE_GITHUB_API", "https://api.github.com"),
+		GitLabAPI:           envOrDefault("ENVPLANE_GITLAB_API", "https://gitlab.com/api/v4"),
 		GitLabTokenResolver: gitLabResolver,
 		RequestTimeout:      requestTimeout,
 		ReadyStaleAfter:     durationFromEnv("ENVPLANE_WEBHOOK_READY_STALE_AFTER", 2*time.Minute),
@@ -786,21 +795,68 @@ func (s *Server) submitCommand(w http.ResponseWriter, r *http.Request, command s
 		return
 	}
 	var result struct {
-		ID     string `json:"id"`
-		JobID  string `json:"jobId"`
-		Status string `json:"status"`
+		ID      string `json:"id"`
+		JobID   string `json:"jobId"`
+		Status  string `json:"status"`
+		Comment string `json:"comment"`
 	}
 	if len(bytes.TrimSpace(responseBody)) > 0 && json.Unmarshal(responseBody, &result) != nil {
 		writeError(w, http.StatusBadGateway, errors.New("invalid control-plane response"))
 		return
 	}
 	s.recordForward(string(command.Provider), started)
+	if command.Command == scm.CommandAICreate && strings.TrimSpace(result.Comment) != "" {
+		if err := s.postAIProposalComment(ctx, command, result.Comment); err != nil {
+			s.logger.Error("failed to publish AI proposal comment", "provider", command.Provider, "event_id", command.EventID, "error", err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"status": "proposal_created_comment_failed"})
+			return
+		}
+	}
 	s.logger.Info("webhook command submitted", "provider", command.Provider, "event_id", command.EventID, "command", command.Command)
 	jobID := strings.TrimSpace(result.JobID)
 	if jobID == "" {
 		jobID = strings.TrimSpace(result.ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "accepted", "jobId": jobID})
+}
+
+func (s *Server) postAIProposalComment(ctx context.Context, command scm.PullRequestCommand, body string) error {
+	var endpoint, header, token string
+	switch command.Provider {
+	case scm.ProviderGitHub:
+		if s.cfg.GitHubCommentToken == "" {
+			return errors.New("GitHub comment token is not configured")
+		}
+		header, token = "Authorization", "Bearer "+s.cfg.GitHubCommentToken
+		endpoint = strings.TrimRight(s.cfg.GitHubAPI, "/") + "/repos/" + strings.Trim(command.Repo, "/") + "/issues/" + url.PathEscape(command.ChangeID) + "/comments"
+	case scm.ProviderGitLab:
+		if s.cfg.GitLabCommentToken == "" {
+			return errors.New("GitLab comment token is not configured")
+		}
+		header, token = "PRIVATE-TOKEN", s.cfg.GitLabCommentToken
+		endpoint = strings.TrimRight(s.cfg.GitLabAPI, "/") + "/projects/" + url.PathEscape(command.Repo) + "/merge_requests/" + url.PathEscape(command.ChangeID) + "/notes"
+	default:
+		return errors.New("unsupported SCM provider")
+	}
+	payload, err := json.Marshal(map[string]string{"body": body})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(header, token)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("SCM comment request failed with HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (s *Server) logRejection(r *http.Request, provider, reason, eventType string) {
