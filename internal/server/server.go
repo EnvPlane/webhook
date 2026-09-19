@@ -214,10 +214,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /livez", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
+	// Keep the externally documented control-plane callback contract stable
+	// when the standalone receiver is published by the umbrella chart.
+	mux.HandleFunc("GET /api/v1/webhook-receiver/readyz", s.ready)
 	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.Handle("POST /api/v1/webhooks/github", s.rateLimit(http.HandlerFunc(s.githubWebhook)))
 	mux.Handle("POST /webhook/github", s.rateLimit(http.HandlerFunc(s.githubWebhook)))
 	mux.Handle("POST /api/v1/webhooks/gitlab", s.rateLimit(http.HandlerFunc(s.gitlabWebhook)))
+	mux.Handle("POST /api/v1/webhook-receiver/gitlab", s.rateLimit(http.HandlerFunc(s.gitlabWebhook)))
 	return mux
 }
 
@@ -328,8 +332,8 @@ func (s *Server) controlPlaneHealthy() bool {
 	if err != nil {
 		return false
 	}
-	defer response.Body.Close()
-	return response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
+	healthy := response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
+	return healthy && response.Body.Close() == nil
 }
 
 func (s *Server) recordDelivery(provider, outcome string) {
@@ -570,13 +574,14 @@ func (s *Server) authorizedProbeHeaders(r *http.Request) (string, string) {
 	if !strings.EqualFold(strings.TrimSpace(r.Header.Get("X-EnvPlane-Webhook-Probe")), "true") {
 		return "", ""
 	}
-	if !validGitLabToken(s.cfg.ReceiverToken, r.Header.Get("X-EnvPlane-Probe-Authorization")) {
-		return "", ""
-	}
 	nonce := strings.TrimSpace(r.Header.Get("X-EnvPlane-Delivery-Nonce"))
 	if nonce == "" {
 		return "", ""
 	}
+	// Probe metadata is not proof by itself. The control plane verifies the
+	// project-scoped GitLab signing secret and pending high-entropy nonce before
+	// it can mark a delivery verified. Do not require a second credential over
+	// the public callback merely to preserve the metadata.
 	return "true", nonce
 }
 
