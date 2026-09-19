@@ -21,7 +21,7 @@ jobs:
       - name: Select module Go toolchain
         run: echo "GOTOOLCHAIN=go$(awk '/^go[[:space:]]/ {print $2; exit}' go.mod)" >> "$GITHUB_ENV"
       - name: Cache Go modules and build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/go/pkg/mod
@@ -33,6 +33,10 @@ jobs:
         run: |
           go mod edit -dropreplace=github.com/envplane/contracts
           go mod tidy
+      - name: Verify contracts pin is current
+        run: ./scripts/check-contract-version.sh
+      - name: Verify isolated module build
+        run: GOWORK=off go build ./...
       - name: Download modules before running repository code
         run: go mod download
       - name: Scan Go dependencies

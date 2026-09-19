@@ -200,6 +200,9 @@ func TestParseGitHubPRCommand(t *testing.T) {
 	if command.Provider != ProviderGitHub {
 		t.Fatalf("provider = %q", command.Provider)
 	}
+	if command.AuthorAssociation != "MEMBER" {
+		t.Fatalf("author association = %q", command.AuthorAssociation)
+	}
 	if command.Command != CommandPin {
 		t.Fatalf("command = %q", command.Command)
 	}
@@ -239,11 +242,39 @@ func TestParseGitLabPRCommand(t *testing.T) {
 	if command.Provider != ProviderGitLab {
 		t.Fatalf("provider = %q", command.Provider)
 	}
+	if command.AuthorID != "77" || command.AuthorAccessLevel != 0 {
+		t.Fatalf("author identity = id %q access level %d", command.AuthorID, command.AuthorAccessLevel)
+	}
 	if command.Command != CommandDestroy {
 		t.Fatalf("command = %q", command.Command)
 	}
 	if command.ChangeID != "2201" || command.EnvironmentID() != "mr-2201" {
 		t.Fatalf("unexpected change/environment id: change=%q env=%q", command.ChangeID, command.EnvironmentID())
+	}
+}
+
+func TestParseGitHubPRCommandCapturesAuthorAssociation(t *testing.T) {
+	for _, association := range []string{"NONE", "MEMBER"} {
+		t.Run(association, func(t *testing.T) {
+			body := strings.Replace(githubIssueCommentPayload("/envplane destroy"), `"author_association": "MEMBER"`, `"author_association": "`+association+`"`, 1)
+			command, err := ParseGitHubPRCommand([]byte(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if command.AuthorAssociation != association {
+				t.Fatalf("author association = %q", command.AuthorAssociation)
+			}
+		})
+	}
+}
+
+func TestParseGitLabPRCommandDoesNotInferAuthorAccessFromNotePayload(t *testing.T) {
+	command, err := ParseGitLabPRCommand([]byte(gitlabNotePayload("/envplane destroy")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.AuthorID != "77" || command.AuthorAccessLevel != 0 {
+		t.Fatalf("author identity = id %q access level %d", command.AuthorID, command.AuthorAccessLevel)
 	}
 }
 
@@ -279,22 +310,7 @@ func TestSCMParsersRejectMalformedJSON(t *testing.T) {
 	}
 }
 
-func TestSCMNormalizationHelpers(t *testing.T) {
-	for _, tt := range []struct{ name, input, want string }{
-		{"branch", " Feature/ABC_42 ", "feature-abc-42"},
-		{"unicode", "ümlaut", "mlaut"},
-		{"empty", "---", ""},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := normalizeIdentifier(tt.input); got != tt.want {
-				t.Fatalf("normalizeIdentifier = %q, want %q", got, tt.want)
-			}
-			expected := domain.BranchEnvironmentNameFor("default", "", tt.input, "scm", "").ID
-			if got := branchToEnvironmentID(tt.input); got != expected {
-				t.Fatalf("branchToEnvironmentID = %q, want %q", got, expected)
-			}
-		})
-	}
+func TestSCMCommandDuration(t *testing.T) {
 	for _, tt := range []struct {
 		input string
 		want  time.Duration
@@ -410,6 +426,7 @@ func githubIssueCommentPayload(body string) string {
   },
   "comment": {
     "body": "` + body + `",
+    "author_association": "MEMBER",
     "user": {
       "login": "octocat"
     }
@@ -435,6 +452,7 @@ func gitlabPayloadWithDraft(action string, state string, branch string, sha stri
 	return `{
   "object_kind": "merge_request",
   "user": {
+    "id": 77,
     "name": "Alex",
     "username": "alex"
   },
@@ -490,8 +508,10 @@ func gitlabNotePayload(body string) string {
 	return `{
   "object_kind": "note",
   "user": {
+    "id": 77,
     "name": "Alex",
-    "username": "alex"
+    "username": "alex",
+    "access_level": 30
   },
   "project": {
     "path_with_namespace": "group/repo",
