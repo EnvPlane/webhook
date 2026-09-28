@@ -527,7 +527,7 @@ func (s *Server) submitGitLabRaw(w http.ResponseWriter, r *http.Request, body []
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
 	defer cancel()
 	probe, nonce := s.authorizedProbeHeaders(r)
-	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+"/api/v1/webhook-receiver/gitlab", body, map[string]string{
+	response, err := s.doControlPlaneRequest(ctx, s.gitLabReceiverEndpoint(r, "/api/v1/webhook-receiver/gitlab"), body, map[string]string{
 		"Authorization":             "Bearer " + s.cfg.ReceiverToken,
 		"Content-Type":              "application/json",
 		"X-Gitlab-Token":            r.Header.Get("X-Gitlab-Token"),
@@ -555,7 +555,7 @@ func (s *Server) submitGitLabRawCommand(w http.ResponseWriter, r *http.Request, 
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
 	defer cancel()
 	probe, nonce := s.authorizedProbeHeaders(r)
-	response, err := s.doControlPlaneRequest(ctx, s.cfg.ControlPlaneURL+"/api/v1/webhook-receiver/gitlab-command", body, map[string]string{
+	response, err := s.doControlPlaneRequest(ctx, s.gitLabReceiverEndpoint(r, "/api/v1/webhook-receiver/gitlab-command"), body, map[string]string{
 		"Authorization":             "Bearer " + s.cfg.ReceiverToken,
 		"Content-Type":              "application/json",
 		"X-Gitlab-Token":            r.Header.Get("X-Gitlab-Token"),
@@ -577,6 +577,26 @@ func (s *Server) submitGitLabRawCommand(w http.ResponseWriter, r *http.Request, 
 	}
 	s.recordForward(string(scm.ProviderGitLab), time.Now())
 	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
+}
+
+// gitLabReceiverEndpoint preserves only the project-scoped route binding from
+// a public callback. The control plane still verifies both repository ownership
+// and the project's GitLab signing secret before it accepts the delivery.
+func (s *Server) gitLabReceiverEndpoint(r *http.Request, path string) string {
+	endpoint := strings.TrimRight(s.cfg.ControlPlaneURL, "/") + path
+	if r == nil {
+		return endpoint
+	}
+	query := url.Values{}
+	for _, key := range []string{"project", "tenant"} {
+		if value := strings.TrimSpace(r.URL.Query().Get(key)); value != "" {
+			query.Set(key, value)
+		}
+	}
+	if encoded := query.Encode(); encoded != "" {
+		return endpoint + "?" + encoded
+	}
+	return endpoint
 }
 
 func (s *Server) authorizedProbeHeaders(r *http.Request) (string, string) {

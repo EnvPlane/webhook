@@ -142,6 +142,29 @@ func TestCanonicalControlPlaneReceiverRoutesRemainAvailable(t *testing.T) {
 	}
 }
 
+func TestGitLabWebhookForwardsProjectScopedCallbackBinding(t *testing.T) {
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/webhook-receiver/gitlab" || r.URL.Query().Get("project") != "project-a" || r.URL.Query().Get("tenant") != "tenant-a" {
+			http.Error(w, "missing project-scoped binding", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer controlPlane.Close()
+
+	application := newTestServer(t, controlPlane.URL)
+	body := []byte(`{"object_kind":"merge_request","project":{"id":9,"path_with_namespace":"envplane/backend","web_url":"https://gitlab.com/envplane/backend"},"object_attributes":{"id":4,"iid":4,"action":"update","state":"opened","source_branch":"e2e/webhook","last_commit":{"id":"abc"}},"user":{"username":"tester"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhook-receiver/gitlab?project=project-a&tenant=tenant-a&ignored=1", bytes.NewReader(body))
+	req.Header.Set("X-Gitlab-Event", "Merge Request Hook")
+	req.Header.Set("X-Gitlab-Token", "gitlab-token")
+	req.Header.Set("X-Gitlab-Event-UUID", "project-scoped-gitlab-4")
+	rec := httptest.NewRecorder()
+	application.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("project-scoped GitLab response=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestWebhookRateLimitRejectsExcessRequests(t *testing.T) {
 	var submissions atomic.Int32
 	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
