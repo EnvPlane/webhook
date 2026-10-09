@@ -1,5 +1,5 @@
 module github.com/envplane/webhook
 
-go 1.25.13
+go 1.26.9
 
 require github.com/envplane/contracts v0.1.107
