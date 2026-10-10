@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   required-go-ci:
-    if: github.repository == 'EnvPlane/webhook' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    if: github.repository == 'envplane/webhook' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -41,10 +41,10 @@ jobs:
           script: |
             const {requireGoCI} = require('./.github/scripts/required-go-ci.cjs');
             await requireGoCI({github, context, core,
-              expectedRepository: 'EnvPlane/webhook', expectedName: 'Go CI'});
+              expectedRepository: 'envplane/webhook', expectedName: 'Go CI'});
   publish:
     needs: required-go-ci
-    if: github.repository == 'EnvPlane/webhook' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    if: github.repository == 'envplane/webhook' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
