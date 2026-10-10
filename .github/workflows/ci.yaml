@@ -33,8 +33,10 @@ jobs:
         run: |
           go mod edit -dropreplace=github.com/envplane/contracts
           go mod tidy
-      - name: Verify contracts pin is current
-        run: ./scripts/check-contract-version.sh
+      - name: Verify reviewed contracts release snapshot
+        run: |
+          python3 -B scripts/test-contract-snapshot.py
+          ./scripts/check-contract-version.sh
       - name: Verify isolated module build
         run: GOWORK=off go build ./...
       - name: Download modules before running repository code
